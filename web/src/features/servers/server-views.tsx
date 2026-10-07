@@ -683,8 +683,25 @@ export function ServerDetail({
           server={current}
           node={node}
           config={config}
+          onApplying={setDeploying}
+          onApplyFailed={(message) => {
+            void api<GameServer>(`/api/servers/${current.id}/config`)
+              .then((latest) => {
+                setCurrent(
+                  latest.status === "error"
+                    ? { ...latest, error: message }
+                    : latest,
+                );
+                setDeploying(false);
+              })
+              .catch(() => {
+                // Keep the current server view if its status cannot be refreshed.
+                setDeploying(false);
+              });
+          }}
           onSaved={(updated) => {
             setCurrent(updated);
+            setDeploying(false);
             onEditConfig(false);
           }}
           onCancel={() => onEditConfig(false)}
@@ -826,12 +843,16 @@ export function ServerConfiguration({
   server,
   node,
   config,
+  onApplying,
+  onApplyFailed,
   onSaved,
   onCancel,
 }: {
   server: GameServer;
   node?: NodeItem;
   config?: Config;
+  onApplying: (applying: boolean) => void;
+  onApplyFailed: (message: string) => void;
   onSaved: (s: GameServer) => void;
   onCancel: () => void;
 }) {
@@ -852,8 +873,22 @@ export function ServerConfiguration({
     [loading, setLoading] = useState(true),
     [error, setError] = useState("");
   const defs = config?.spec?.variables || [];
-  const nodePorts = node?.portAllocations || [];
+  const [nodePorts, setNodePorts] = useState(node?.portAllocations || []);
   const ips = [...new Set(nodePorts.map((p) => p.ip).concat(node?.ips || []))];
+  useEffect(() => {
+    let live = true;
+    setNodePorts(node?.portAllocations || []);
+    if (node?.id) {
+      api<NodeItem>(`/api/nodes/${node.id}`)
+        .then((fresh) => live && setNodePorts(fresh.portAllocations || []))
+        .catch(() => {
+          // Keep the allocations already present in the page if refresh fails.
+        });
+    }
+    return () => {
+      live = false;
+    };
+  }, [node?.id, JSON.stringify(node?.portAllocations || [])]);
   useEffect(() => {
     let live = true;
     setLoading(true);
@@ -923,7 +958,11 @@ export function ServerConfiguration({
       return;
     setBusy(true);
     setError("");
+    onApplying(true);
     try {
+      await new Promise<void>((resolve) =>
+        window.requestAnimationFrame(() => resolve()),
+      );
       const result = await api<GameServer>(`/api/servers/${server.id}/config`, {
         method: "PUT",
         body: JSON.stringify({
@@ -942,7 +981,9 @@ export function ServerConfiguration({
       });
       onSaved(result);
     } catch (e: unknown) {
-      setError(errorMessage(e));
+      const message = errorMessage(e);
+      setError(message);
+      onApplyFailed(message);
     } finally {
       setBusy(false);
     }
@@ -959,6 +1000,7 @@ export function ServerConfiguration({
           className="icon-button"
           title="Close editor"
           onClick={onCancel}
+          disabled={busy}
         >
           <X size={16} />
         </button>
@@ -1038,7 +1080,9 @@ export function ServerConfiguration({
               <div>
                 <div className="subsection-label">PORT ALLOCATIONS</div>
                 <small>
-                  Every host IP and port is checked against the node pool.
+                  {nodePorts.length} host ports loaded from the node. Select a
+                  port from any node IP; the IP updates with your selection.
+                  UFW and your hosting provider's firewall must also allow it.
                 </small>
               </div>
               <Button
@@ -1098,18 +1142,44 @@ export function ServerConfiguration({
                 <Field label="Host port">
                   <select
                     required
-                    value={a.host}
-                    onChange={(e) =>
-                      updateAllocation(i, "host", Number(e.target.value))
-                    }
+                    value={`${a.ip}|${a.host}`}
+                    onChange={(e) => {
+                      const [ip, host] = e.target.value.split("|");
+                      setAllocations((old) =>
+                        old.map((allocation, index) =>
+                          index === i
+                            ? { ...allocation, ip, host: Number(host) }
+                            : allocation,
+                        ),
+                      );
+                    }}
                   >
-                    {nodePorts
-                      .filter((p) => p.ip === a.ip)
-                      .map((p) => (
-                        <option key={p.port} value={p.port}>
-                          {p.port}
-                        </option>
-                      ))}
+                    {!nodePorts.some(
+                      (p) => p.ip === a.ip && p.port === Number(a.host),
+                    ) && Number(a.host) > 0 && (
+                      <option value={`${a.ip}|${a.host}`}>
+                        {a.host} — {a.ip} (current allocation)
+                      </option>
+                    )}
+                    {!nodePorts.length && (
+                      <option value="" disabled>
+                        No ports allocated on this node
+                      </option>
+                    )}
+                    {[...new Set(nodePorts.map((p) => p.ip))].map((ip) => (
+                      <optgroup key={ip} label={ip}>
+                        {nodePorts
+                          .filter((p) => p.ip === ip)
+                          .map((p) => (
+                            <option
+                              key={`${p.ip}|${p.port}`}
+                              value={`${p.ip}|${p.port}`}
+                            >
+                              {p.port}
+                            </option>
+                          ))}
+                      </optgroup>
+                    ))}
                   </select>
                 </Field>
                 <Field label="Container port">
@@ -1160,17 +1230,20 @@ export function ServerConfiguration({
             <Button
               variant="subtle"
               type="button"
-
+              disabled={busy}
               onClick={onCancel}
             >
               Cancel
             </Button>
             <Button
               variant="primary"
-
               disabled={busy || loading || !node || node.status !== "online"}
             >
-              <Save size={14} />
+              {busy ? (
+                <span className="spinner" aria-hidden="true" />
+              ) : (
+                <Save size={14} />
+              )}
               {busy ? "Applying…" : "Save and apply"}
             </Button>
           </div>

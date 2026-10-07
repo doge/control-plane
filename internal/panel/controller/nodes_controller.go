@@ -291,6 +291,30 @@ func (c *Controller) nodeByID(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 500, map[string]string{"error": err.Error()})
 		return
 	}
+	ports := make([]int, 0, len(in.PortAllocations))
+	seenPorts := make(map[int]bool, len(in.PortAllocations))
+	for _, allocation := range in.PortAllocations {
+		if !seenPorts[allocation.Port] {
+			ports = append(ports, allocation.Port)
+			seenPorts[allocation.Port] = true
+		}
+	}
+	c.app.nodesMu.RLock()
+	nodeConn := c.app.nodeSessions[id]
+	c.app.nodesMu.RUnlock()
+	if nodeConn != nil && len(ports) > 0 {
+		ctx, cancel := context.WithTimeout(r.Context(), 2*time.Minute)
+		_, firewallErr := nodeConn.request(ctx, map[string]any{
+			"type": "node_firewall_allow", "payload": map[string]any{"ports": ports},
+		})
+		cancel()
+		if firewallErr != nil {
+			writeJSON(w, http.StatusBadGateway, map[string]string{
+				"error": "port allocations were saved, but UFW rules could not be applied: " + firewallErr.Error(),
+			})
+			return
+		}
+	}
 	var node models.Node
 	if c.service.Nodes.FindOne(r.Context(), bson.M{"_id": id}).Decode(&node) != nil {
 		writeJSON(w, 404, map[string]string{"error": "node not found"})

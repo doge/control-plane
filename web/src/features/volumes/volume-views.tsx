@@ -209,7 +209,7 @@ export function VolumesPage({
       <PageHeading
         eyebrow="SERVER STORAGE"
         title="Volumes"
-        description="Create and attach server volumes, then extend them as needed. Linux nodes enforce disk sizes; Mac local testing uses Docker volumes without size quotas."
+        description="Create and attach server volumes, then extend them as needed."
         action={
           canManage ? (
             <Button

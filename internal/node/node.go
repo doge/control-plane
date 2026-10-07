@@ -187,7 +187,7 @@ func (a *Agent) connect(ctx context.Context) error {
 			if err := a.send(conn, Message{Type: "pong"}); err != nil {
 				return err
 			}
-		case "create_server", "server_action", "server_volume_create", "server_volume_resize", "server_volume_delete", "server_backup", "server_backup_delete", "server_restore", "server_delete", "server_inspect", "node_resources", "node_container_delete", "node_image_delete", "file_list", "file_read", "file_write", "file_upload", "file_delete", "file_upload_url", "file_move", "file_unzip":
+		case "create_server", "server_action", "server_volume_create", "server_volume_resize", "server_volume_delete", "server_backup", "server_backup_delete", "server_restore", "server_delete", "server_inspect", "node_resources", "node_firewall_allow", "node_container_delete", "node_image_delete", "file_list", "file_read", "file_write", "file_upload", "file_delete", "file_upload_url", "file_move", "file_unzip":
 			go a.dispatch(conn, message)
 		case "console_attach":
 			if err := a.attachConsole(conn, message); err != nil {
@@ -392,6 +392,8 @@ func (a *Agent) handleRequest(m Message) (map[string]any, error) {
 	switch m.Type {
 	case "node_resources":
 		return a.dockerResources(ctx)
+	case "node_firewall_allow":
+		return OpenNodePortAllocations(ctx, payload)
 	case "node_container_delete":
 		return a.deleteNodeContainer(ctx, payload)
 	case "node_image_delete":

@@ -64,6 +64,9 @@ func (a *Agent) createServer(ctx context.Context, message Message) (string, erro
 	if err != nil {
 		return "", err
 	}
+	if err := OpenAllocatedPorts(ctx, bindings); err != nil {
+		return "", err
+	}
 	labels[configLabel] = configHash(payload)
 	config := &container.Config{
 		Image: imageName, Env: stringSlice(payload["environment"]),

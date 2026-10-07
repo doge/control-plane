@@ -70,7 +70,7 @@ for package in docker.io docker-doc docker-compose podman-docker containerd runc
 done
 
 apt-get update
-apt-get install -y ca-certificates curl e2fsprogs util-linux
+apt-get install -y ca-certificates curl e2fsprogs ufw util-linux
 install -m 0755 -d /etc/apt/keyrings
 curl -fsSL "https://download.docker.com/linux/$ID/gpg" -o /etc/apt/keyrings/docker.asc
 chmod a+r /etc/apt/keyrings/docker.asc
@@ -119,7 +119,7 @@ LimitNOFILE=65536
 NoNewPrivileges=true
 ProtectHome=true
 ProtectSystem=full
-ReadWritePaths=/etc/systemd/system
+ReadWritePaths=/etc/systemd/system /etc/ufw
 
 [Install]
 WantedBy=multi-user.target

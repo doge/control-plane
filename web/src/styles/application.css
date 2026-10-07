@@ -29,7 +29,9 @@ textarea {
   @apply min-h-[100vh] flex items-center justify-center gap-[12px] text-muted;
 }
 .spinner {
-  @apply w-[18px] h-[18px] min-w-[18px] min-h-[18px] [flex:0_0_18px] [aspect-ratio:1] inline-block [border:2px_solid_var(--border-strong)] [border-top-color:var(--accent)] rounded-[50%] [animation:spin_0.8s_linear_infinite];
+  @apply w-[18px] h-[18px] min-w-[18px] min-h-[18px] [flex:0_0_18px] [aspect-ratio:1] inline-block rounded-[50%] [animation:spin_0.8s_linear_infinite];
+  border: 2px solid var(--border-strong);
+  border-top-color: var(--accent);
 }
 @keyframes spin {
   to {
@@ -1117,6 +1119,12 @@ button.file-breadcrumb:hover:not(:disabled) {
 .server-config-form > .button {
   @apply [justify-self:start];
 }
+.config-actions {
+  @apply flex items-center justify-end gap-[10px] pt-[4px];
+}
+.config-actions > .button {
+  @apply min-h-[36px] [margin:0];
+}
 .server-allocation-row {
   @apply grid grid-cols-[minmax(100px,_0.8fr)_minmax(130px,_1fr)_minmax(120px,_1fr)] [align-items:end] gap-[10px] py-[8px] px-0 [border-bottom:1px_solid_var(--border)];
 }
@@ -1320,6 +1328,12 @@ button.file-breadcrumb:hover:not(:disabled) {
   }
   .server-allocation-row {
     @apply grid-cols-[1fr];
+  }
+  .config-actions {
+    @apply grid grid-cols-[repeat(2,_minmax(0,_1fr))] gap-[8px];
+  }
+  .config-actions > .button {
+    @apply w-full px-[8px];
   }
   .allocation-heading {
     @apply items-start flex-col;

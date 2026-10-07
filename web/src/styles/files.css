@@ -15,6 +15,16 @@
 .node-port-editor .allocation-heading {
   @apply pb-[2px];
 }
+.node-port-add {
+  @apply grid grid-cols-[minmax(0,_1.5fr)_minmax(100px,_0.7fr)_auto] items-end gap-[8px];
+}
+.node-port-add label {
+  @apply grid gap-[5px] text-muted text-[9px];
+}
+.node-port-add input,
+.node-port-add select {
+  @apply w-full min-w-0 py-[8px] px-[9px] [border:1px_solid_var(--border-strong)] rounded-[6px] text-text bg-bg;
+}
 .node-port-row {
   @apply grid grid-cols-[minmax(0,_1fr)_auto] [align-items:end] gap-[8px] py-[8px] px-0 [border-bottom:1px_solid_var(--border)];
 }
@@ -108,6 +118,9 @@
   .allocation-pool-row {
     @apply grid-cols-[minmax(0,_1fr)_minmax(100px,_0.8fr)_auto];
   }
+  .node-port-add {
+    @apply grid-cols-2;
+  }
   .file-code-editor {
     @apply h-[55vh] min-h-[280px];
   }
@@ -132,6 +145,12 @@
     @apply flex-row;
   }
   .node-port-editor .allocation-heading .button {
+    @apply w-auto;
+  }
+  .node-port-add label:first-child {
+    @apply [grid-column:1/-1];
+  }
+  .node-port-add .button {
     @apply w-auto;
   }
   .file-editor-actions {

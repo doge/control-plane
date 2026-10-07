@@ -204,6 +204,10 @@ export function NodeDetail({
   const [ports, setPorts] = useState<{ ip: string; port: number }[]>(
     node.portAllocations || [],
   );
+  const [nodeIPs, setNodeIPs] = useState(node.ips || []);
+  const [portIP, setPortIP] = useState(node.ips?.[0] || node.address || "");
+  const [singlePort, setSinglePort] = useState("25565");
+  const [portError, setPortError] = useState("");
   const [busy, setBusy] = useState(false);
   const [history, setHistory] = useState<
     { time: string; cpu: number; memory: number }[]
@@ -229,6 +233,8 @@ export function NodeDetail({
   useEffect(() => {
     setAddress(node.address || "");
     setPorts(node.portAllocations || []);
+    setNodeIPs(node.ips || []);
+    setPortIP(node.ips?.[0] || node.address || "");
   }, [node.id, node.address, portsFingerprint, ipFingerprint]);
   useEffect(() => {
     const s = liveStats;
@@ -251,7 +257,7 @@ export function NodeDetail({
     e.preventDefault();
     setBusy(true);
     try {
-      await api(`/api/nodes/${node.id}`, {
+      const updated = await api<NodeItem>(`/api/nodes/${node.id}`, {
         method: "PUT",
         body: JSON.stringify({
           address,
@@ -259,8 +265,14 @@ export function NodeDetail({
           portAllocations: ports.map((p) => ({ ...p, port: Number(p.port) })),
         }),
       });
+      setAddress(updated.address || address);
+      setNodeIPs(updated.ips || []);
+      setPorts(updated.portAllocations || []);
+      setPortIP(updated.ips?.[0] || updated.address || "");
       showToast(
-        "DNS addresses and specific port allocations saved.",
+        node.status === "online"
+          ? "DNS addresses, port allocations, and UFW rules saved."
+          : "DNS addresses and port allocations saved. UFW rules will be added when the node is online and a server uses an allocation.",
         "success",
       );
     } catch (e: unknown) {
@@ -290,18 +302,20 @@ export function NodeDetail({
       setBusy(false);
     }
   };
-  const ips = node.ips?.length ? node.ips : [node.address].filter(Boolean);
-  const addPort = () =>
-    setPorts((old) => [
-      ...old,
-      {
-        ip: ips[0] || "",
-        port: Math.min(
-          65535,
-          Math.max(25564, ...old.map((p) => Number(p.port) || 0)) + 1,
-        ),
-      },
-    ]);
+  const ips = nodeIPs.length ? nodeIPs : [address].filter(Boolean);
+  const addPort = () => {
+    const port = Number(singlePort);
+    if (!Number.isInteger(port) || port < 1 || port > 65535) {
+      setPortError("Enter a valid port from 1 to 65535.");
+      return;
+    }
+    if (ports.some((entry) => entry.ip === portIP && entry.port === port)) {
+      setPortError(`Port ${port} is already allocated for this IP.`);
+      return;
+    }
+    setPorts((old) => [...old, { ip: portIP, port }]);
+    setPortError("");
+  };
   const updatePort = (index: number, key: "ip" | "port", value: string) =>
     setPorts((old) =>
       old.map((p, i) =>
@@ -441,7 +455,7 @@ export function NodeDetail({
         <form className="panel-card node-config" onSubmit={save}>
           <PanelHeading
             title="Addresses and allocations"
-            sub="Manage specific IP and port pairs available to servers."
+            sub="Add individual ports available to servers."
           />
           <div className="node-config-fields">
             <Field label="Node hostname or IP">
@@ -451,8 +465,8 @@ export function NodeDetail({
                 onChange={(e) => setAddress(e.target.value)}
               />
               <small className="field-hint">
-                DNS addresses are resolved and available below. Each allocation
-                is an exact port number, not a range.
+                DNS addresses are resolved below. Each saved port becomes
+                available in the server configuration dropdown.
               </small>
             </Field>
             <div className="ip-pool-list">
@@ -461,16 +475,56 @@ export function NodeDetail({
                   <div className="subsection-label">NODE PORT ALLOCATIONS</div>
                   <small>{ports.length} configured</small>
                 </div>
-                <Button
-                  variant="subtle"
-                  size="tiny"
-                  type="button"
-
-                  onClick={addPort}
-                >
-                  <Plus size={13} />
-                  Add allocation
-                </Button>
+              </div>
+              <div className="node-port-editor">
+                <div className="allocation-heading">
+                  <div>
+                    <div className="subsection-label">ADD PORT</div>
+                    <small>Ports are added individually to the node pool.</small>
+                  </div>
+                </div>
+                <div className="node-port-add">
+                  <label>
+                    IP address
+                    <select
+                      value={portIP}
+                      onChange={(e) => {
+                        setPortIP(e.target.value);
+                        setPortError("");
+                      }}
+                    >
+                      {ips.map((ip) => (
+                        <option key={ip} value={ip}>
+                          {ip}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <label>
+                    Port number
+                    <input
+                      type="number"
+                      min="1"
+                      max="65535"
+                      step="1"
+                      value={singlePort}
+                      onChange={(e) => {
+                        setSinglePort(e.target.value);
+                        setPortError("");
+                      }}
+                    />
+                  </label>
+                  <Button
+                    variant="subtle"
+                    size="tiny"
+                    type="button"
+                    onClick={addPort}
+                  >
+                    <Plus size={13} />
+                    Add port
+                  </Button>
+                </div>
+                {portError && <div className="form-error">{portError}</div>}
               </div>
               {ports.map((allocation, index) => (
                 <div
@@ -525,7 +579,7 @@ export function NodeDetail({
             </div>
             <Button variant="primary" disabled={busy}>
               <Save size={14} />
-              Resolve DNS and save allocations
+              Resolve DNS, save & open ports
             </Button>
           </div>
         </form>

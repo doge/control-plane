@@ -76,6 +76,7 @@ export function Console({
       setSocket(ws);
       ws.onopen = () => setStatus("attaching");
       ws.onmessage = (e) => {
+        if (!live) return;
         try {
           const m = JSON.parse(e.data);
           if (m.type === "console_attached") setStatus("connected");
@@ -84,7 +85,15 @@ export function Console({
             ws.close();
           }
           const text = m.payload?.text || m.text || "";
-          if (text) {
+          if (m.type === "console_status" && text) {
+            const statusLines = String(text).split(/\r?\n/).filter(Boolean);
+            if (statusLines.length) {
+              setLines((old) => [...old, ...statusLines].slice(-1000));
+            }
+            terminal.current.line = "";
+            terminal.current.cursor = 0;
+            setCurrentLine("");
+          } else if (text) {
             const parsed = decodeConsoleText(String(text), terminal.current);
             if (parsed.lines.length) {
               setLines((old) => [...old, ...parsed.lines].slice(-1000));
@@ -95,10 +104,13 @@ export function Console({
           /* ignore malformed console frames */
         }
       };
-      ws.onerror = () => setStatus("connection error");
+      ws.onerror = () => {
+        if (live) setStatus("connection error");
+      };
       ws.onclose = () => {
+        if (!live) return;
         setStatus("disconnected");
-        if (live) retry = window.setTimeout(connect, 1500);
+        retry = window.setTimeout(connect, 1500);
       };
     };
     connect();
@@ -114,7 +126,13 @@ export function Console({
   }, [lines, currentLine]);
   const submit = (e: FormEvent) => {
     e.preventDefault();
-    if (!command.trim() || socket?.readyState !== WebSocket.OPEN) return;
+    if (
+      deploying ||
+      server.status !== "running" ||
+      !command.trim() ||
+      socket?.readyState !== WebSocket.OPEN
+    )
+      return;
     socket.send(JSON.stringify({ command }));
     setCommand("");
   };
@@ -181,7 +199,11 @@ export function Console({
         <input
           value={command}
           onChange={(e) => setCommand(e.target.value)}
-          disabled={status !== "connected" || server.status !== "running"}
+          disabled={
+            deploying ||
+            status !== "connected" ||
+            server.status !== "running"
+          }
           placeholder={
             status === "connected" ? "Type a command…" : "Console disconnected"
           }
@@ -189,7 +211,12 @@ export function Console({
         <Button
           variant="primary"
 
-          disabled={status !== "connected" || !command.trim()}
+          disabled={
+            deploying ||
+            status !== "connected" ||
+            server.status !== "running" ||
+            !command.trim()
+          }
         >
           Send
         </Button>

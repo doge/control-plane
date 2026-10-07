@@ -316,7 +316,7 @@ func (a *App) serverConsole(w http.ResponseWriter, r *http.Request) {
 		_ = client.Close()
 		return
 	}
-	_ = consoleClient.write(map[string]any{"type": "console_status", "text": "Connecting to server console"})
+	_ = consoleClient.write(map[string]any{"type": "console_status", "text": "Connecting to server console\n"})
 	defer func() {
 		last := node.removeConsoleClient(serverTextID, client)
 		if last {
