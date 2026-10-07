@@ -1,0 +1,31 @@
+{
+  "name": "DayZ",
+  "slug": "dayz",
+  "description": "DayZ Linux dedicated server. Requires an amd64 node and a Steam account that can download the server.",
+  "author": "Control Plane",
+  "spec": {
+    "version": 1,
+    "dockerImages": ["cm2network/steamcmd:root"],
+    "startupFile": "startup.sh",
+    "user": "steam",
+    "dataDirectory": "/home/container",
+    "resources": {"cpuLimit": 4, "memoryMB": 8192},
+    "supportedArchitectures": ["amd64"],
+    "install": {
+      "image": "cm2network/steamcmd:root",
+      "entrypoint": "/bin/bash",
+      "scriptFile": "install.sh"
+    },
+    "ports": [
+      {"name": "Game", "container": 2302, "protocol": "udp"},
+      {"name": "Battleye", "container": 2303, "protocol": "udp"},
+      {"name": "Query", "container": 2305, "protocol": "udp"}
+    ],
+    "variables": [
+      {"name": "STEAM_USERNAME", "type": "text", "default": "", "required": true, "ui": true, "description": "Steam account used to download the DayZ server."},
+      {"name": "STEAM_PASSWORD", "type": "secret", "default": "", "required": true, "ui": true},
+      {"name": "ADMIN_PASSWORD", "type": "secret", "default": "", "required": true, "ui": true},
+      {"name": "MAX_PLAYERS", "type": "integer", "default": "60", "ui": true}
+    ]
+  }
+}

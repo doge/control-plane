@@ -1,0 +1,27 @@
+services:
+  mongo:
+    image: mongo:8
+    restart: unless-stopped
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: control-plane
+      MONGO_INITDB_ROOT_PASSWORD: change-this-password
+    volumes:
+      - mongo_data:/data/db
+    ports:
+      - "127.0.0.1:27017:27017"
+
+  panel:
+    build: .
+    restart: unless-stopped
+    depends_on:
+      - mongo
+    environment:
+      PANEL_ADDR: ":8080"
+      MONGO_URI: "mongodb://control-plane:change-this-password@mongo:27017/?authSource=admin"
+      MONGO_DB: "control-plane"
+      SESSION_TTL_HOURS: "168"
+    ports:
+      - "8080:8080"
+
+volumes:
+  mongo_data:

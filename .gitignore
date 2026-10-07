@@ -1,0 +1,31 @@
+# Local secrets and environment files
+.env
+.env.*
+!.env.example
+
+# Local databases, generated release files, and runtime logs
+/data/
+/dist/
+*.log
+*.pid
+
+# Go build and test outputs
+/bin/
+/coverage/
+*.test
+*.out
+*.prof
+control-plane-panel
+control-plane-node
+
+# Frontend dependencies and build output
+/web/node_modules/
+/web/dist/
+
+# Editor and operating system files
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*.swo

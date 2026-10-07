@@ -1,0 +1,27 @@
+{
+  "name": "SteamCMD Config Starter",
+  "slug": "steamcmd-template",
+  "description": "Starter for Steam dedicated servers. Set the app ID and executable; SteamCMD installs the files automatically.",
+  "author": "Control Plane",
+  "spec": {
+    "version": 1,
+    "dockerImages": ["cm2network/steamcmd:root"],
+    "startupFile": "startup.sh",
+    "user": "steam",
+    "dataDirectory": "/home/container",
+    "resources": {"cpuLimit": 2, "memoryMB": 4096},
+    "supportedArchitectures": ["amd64"],
+    "install": {
+      "image": "cm2network/steamcmd:root",
+      "entrypoint": "/bin/bash",
+      "scriptFile": "install.sh"
+    },
+    "ports": [{"name": "Game", "container": 27015, "protocol": "udp"}],
+    "variables": [
+      {"name": "STEAM_APP_ID", "type": "text", "default": "", "required": true, "ui": true},
+      {"name": "STEAM_USERNAME", "type": "text", "default": "anonymous", "ui": true},
+      {"name": "STEAM_PASSWORD", "type": "secret", "default": "", "ui": true},
+      {"name": "SERVER_EXECUTABLE", "type": "text", "default": "./server", "required": true, "ui": true}
+    ]
+  }
+}

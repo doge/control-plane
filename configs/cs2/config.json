@@ -1,0 +1,31 @@
+{
+  "name": "Counter-Strike 2",
+  "slug": "cs2",
+  "description": "Counter-Strike 2 dedicated server. Requires an amd64 node and about 60 GB of free disk space.",
+  "author": "Control Plane",
+  "spec": {
+    "version": 1,
+    "dockerImages": ["ghcr.io/joedwards32/cs2:latest"],
+    "dataDirectory": "/home/steam/cs2-dedicated",
+    "resources": {"cpuLimit": 2, "memoryMB": 4096},
+    "supportedArchitectures": ["amd64"],
+    "environment": {
+      "CS2_SERVERNAME": "{{SERVER_NAME}}",
+      "CS2_PORT": "{{SERVER_PORT}}",
+      "CS2_SERVER_HIBERNATE": "1",
+      "CS2_MAXPLAYERS": "10",
+      "CS2_GAMETYPE": "0",
+      "CS2_GAMEMODE": "1",
+      "CS2_MAPGROUP": "mg_active",
+      "CS2_STARTMAP": "de_dust2"
+    },
+    "ports": [
+      {"name": "GameUDP", "container": 27015, "protocol": "udp"},
+      {"name": "GameTCP", "container": 27015, "protocol": "tcp"},
+      {"name": "CSTV", "container": 27020, "protocol": "udp"}
+    ],
+    "variables": [
+      {"name": "SRCDS_TOKEN", "type": "secret", "default": "", "ui": true, "description": "Optional Steam game-server login token for public server listing."}
+    ]
+  }
+}

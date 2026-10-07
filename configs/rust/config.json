@@ -1,0 +1,31 @@
+{
+  "name": "Rust",
+  "slug": "rust",
+  "description": "Rust dedicated server. SteamCMD installs and updates the server before launch.",
+  "author": "Control Plane",
+  "spec": {
+    "version": 1,
+    "dockerImages": ["cm2network/steamcmd:root"],
+    "startupFile": "startup.sh",
+    "user": "steam",
+    "dataDirectory": "/home/container",
+    "resources": {"cpuLimit": 4, "memoryMB": 12288},
+    "supportedArchitectures": ["amd64"],
+    "install": {
+      "image": "cm2network/steamcmd:root",
+      "entrypoint": "/bin/bash",
+      "scriptFile": "install.sh"
+    },
+    "ports": [
+      {"name": "Game", "container": 28015, "protocol": "udp"},
+      {"name": "Query", "container": 28016, "protocol": "udp"},
+      {"name": "RCON", "container": 28017, "protocol": "tcp"}
+    ],
+    "variables": [
+      {"name": "MAX_PLAYERS", "type": "integer", "default": "50", "ui": true},
+      {"name": "WORLD_SIZE", "type": "integer", "default": "3500", "ui": true},
+      {"name": "WORLD_SEED", "type": "integer", "default": "12345", "ui": true},
+      {"name": "RCON_PASSWORD", "type": "secret", "default": "", "required": true, "ui": true}
+    ]
+  }
+}
