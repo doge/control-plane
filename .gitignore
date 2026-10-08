@@ -6,6 +6,7 @@
 # Local databases, generated release files, and runtime logs
 /data/
 /dist/
+/scripts/redeploy-hosts.sh
 *.log
 *.pid
 

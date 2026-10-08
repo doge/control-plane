@@ -85,7 +85,18 @@ export function Console({
             ws.close();
           }
           const text = m.payload?.text || m.text || "";
-          if (m.type === "console_status" && text) {
+          if (m.type === "console_history") {
+            const historyState = {
+              mode: "normal",
+              line: "",
+              cursor: 0,
+              csi: "",
+            };
+            const parsed = decodeConsoleText(String(text), historyState);
+            terminal.current = historyState;
+            setLines(parsed.lines.slice(-1000));
+            setCurrentLine(parsed.current);
+          } else if (m.type === "console_status" && text) {
             const statusLines = String(text).split(/\r?\n/).filter(Boolean);
             if (statusLines.length) {
               setLines((old) => [...old, ...statusLines].slice(-1000));

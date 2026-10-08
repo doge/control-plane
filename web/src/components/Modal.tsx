@@ -7,10 +7,12 @@ export function Modal({
   title,
   onClose,
   children,
+  wide = false,
 }: {
   title: string;
   onClose: () => void;
   children: React.ReactNode;
+  wide?: boolean;
 }) {
   const [closing, setClosing] = useState(false);
   const closingRef = useRef(false);
@@ -43,7 +45,11 @@ export function Modal({
       className={`modal-backdrop${closing ? " closing" : ""}`}
       onMouseDown={(e) => e.target === e.currentTarget && close()}
     >
-      <section className="modal-card" role="dialog" aria-modal="true">
+      <section
+        className={`modal-card${wide ? " modal-card-wide" : ""}`}
+        role="dialog"
+        aria-modal="true"
+      >
         <header className="modal-header">
           <div>
             <span className="auth-kicker">CONTROL PLANE</span>

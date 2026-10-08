@@ -31,6 +31,7 @@ import {
   type NodeItem,
   type ServerLaunchInfo,
   type Config,
+  isLoopbackIP,
 } from "../../shared/domain";
 
 import { useConfirmation } from "../../shared/dialogs";
@@ -42,6 +43,7 @@ import {
   Entity,
   Field,
   formatBytes,
+  InlineRename,
   PageHeading,
   PanelHeading,
   Quick,
@@ -340,12 +342,8 @@ export function ServersPage({
               </thead>
               <tbody>
                 {servers.map((s: GameServer) => {
-                  const addr =
-                    s.allocations?.[0]?.ip ||
-                    s.address ||
-                    nodeByID.get(s.nodeId)?.ips?.[0] ||
-                    nodeByID.get(s.nodeId)?.address ||
-                    "—";
+                  const node = nodeByID.get(s.nodeId);
+                  const addr = node?.address || s.address || "—";
                   const port = s.allocations?.[0]?.host;
                   return (
                     <tr
@@ -451,6 +449,7 @@ export function ServerDetail({
   onEditConfig,
   onBack,
   onDeleted,
+  onChanged,
   permissions = [],
 }: {
   server: GameServer;
@@ -460,6 +459,7 @@ export function ServerDetail({
   onEditConfig: (v: boolean) => void;
   onBack: () => void;
   onDeleted: () => void;
+  onChanged: () => void;
   permissions?: string[];
 }) {
   const confirmAction = useConfirmation();
@@ -468,7 +468,7 @@ export function ServerDetail({
   const [deploying, setDeploying] = useState(false);
   useEffect(
     () => setCurrent(server),
-    [server.id, server.status, server.containerId],
+    [server.id, server.name, server.status, server.containerId],
   );
   const action = async (name: string) => {
     setBusy(true);
@@ -517,15 +517,16 @@ export function ServerDetail({
     }
   };
   const address =
-    current.allocations?.[0]?.ip ||
-    current.address ||
-    node?.ips?.[0] ||
     node?.address ||
+    current.address ||
     "IP not configured";
+  const bindIPList = [
+    ...new Set(current.allocations?.map((allocation) => allocation.ip) || []),
+  ].join(", ") || "No bind IP assigned";
   const nodeOnline = node?.status === "online";
   const displayStatus = nodeOnline ? current.status : "offline";
   const portList =
-    current.allocations?.map((a) => `${a.ip}:${a.host}`).join(", ") ||
+    current.allocations?.map((allocation) => allocation.host).join(", ") ||
     "No port allocations";
   return (
     <div className="page-stack">
@@ -534,13 +535,32 @@ export function ServerDetail({
       </button>
       <PageHeading
         eyebrow="GAME SERVER"
-        title={current.name}
+        title={
+          <InlineRename
+            value={current.name}
+            label="Server"
+            editable={permissions.includes("servers.update")}
+            onSave={async (name) => {
+              const renamed = await api<{ id: string; name: string }>(
+                `/api/servers/${current.id}/name`,
+                { method: "PUT", body: JSON.stringify({ name }) },
+              );
+              setCurrent((server) => ({ ...server, name: renamed.name }));
+              onChanged();
+              return renamed.name;
+            }}
+          />
+        }
         description={
           (config?.name || "Game server") +
           " · " +
           (node?.name || "Unknown node")
         }
-        action={<Status status={displayStatus} />}
+        action={
+          <div className="server-actions">
+            <Status status={displayStatus} />
+          </div>
+        }
       />
       {nodeOnline && (current.status === "installing" || deploying) && (
         <div className="server-install-state" role="status" aria-live="polite">
@@ -651,10 +671,11 @@ export function ServerDetail({
         <section className="panel-card server-overview">
           <PanelHeading
             title="Connection"
-            sub="Use an allocation address and port from your game client"
+            sub="Players use the public address and port; Docker binds to the node IP below."
           />
-          <Detail label="Address">{address}</Detail>
+          <Detail label="Public address">{address}</Detail>
           <Detail label="Ports">{portList}</Detail>
+          <Detail label="Docker bind IPs">{bindIPList}</Detail>
           <Detail label="Node">{node?.name || "Unknown node"}</Detail>
           {current.allocations?.some(
             (a) => a.ip === "127.0.0.1" || a.ip === "::1",
@@ -874,13 +895,34 @@ export function ServerConfiguration({
     [error, setError] = useState("");
   const defs = config?.spec?.variables || [];
   const [nodePorts, setNodePorts] = useState(node?.portAllocations || []);
-  const ips = [...new Set(nodePorts.map((p) => p.ip).concat(node?.ips || []))];
+  const [nodeBindIPs, setNodeBindIPs] = useState(node?.stats?.bindIPs || []);
+  const routedBindIPs = nodeBindIPs.filter((ip) => !isLoopbackIP(ip));
+  const selectableBindIPs = routedBindIPs.length ? routedBindIPs : nodeBindIPs;
+  const configuredIPs = [
+    ...new Set(nodePorts.map((p) => p.ip).concat(node?.ips || [])),
+  ];
+  const ips = selectableBindIPs.length
+    ? [
+        ...new Set([
+          ...selectableBindIPs,
+          ...allocations.map((allocation) => allocation.ip),
+        ]),
+      ]
+    : configuredIPs;
+  const selectablePorts = selectableBindIPs.length
+    ? nodePorts.filter((port) => selectableBindIPs.includes(port.ip))
+    : nodePorts;
   useEffect(() => {
     let live = true;
     setNodePorts(node?.portAllocations || []);
+    setNodeBindIPs(node?.stats?.bindIPs || []);
     if (node?.id) {
       api<NodeItem>(`/api/nodes/${node.id}`)
-        .then((fresh) => live && setNodePorts(fresh.portAllocations || []))
+        .then((fresh) => {
+          if (!live) return;
+          setNodePorts(fresh.portAllocations || []);
+          setNodeBindIPs(fresh.stats?.bindIPs || []);
+        })
         .catch(() => {
           // Keep the allocations already present in the page if refresh fails.
         });
@@ -888,7 +930,11 @@ export function ServerConfiguration({
     return () => {
       live = false;
     };
-  }, [node?.id, JSON.stringify(node?.portAllocations || [])]);
+  }, [
+    node?.id,
+    JSON.stringify(node?.portAllocations || []),
+    JSON.stringify(node?.stats?.bindIPs || []),
+  ]);
   useEffect(() => {
     let live = true;
     setLoading(true);
@@ -923,7 +969,7 @@ export function ServerConfiguration({
     );
   const addAllocation = () => {
     const next =
-      nodePorts.find(
+      selectablePorts.find(
         (p) =>
           !allocations.some(
             (a) =>
@@ -931,7 +977,7 @@ export function ServerConfiguration({
               Number(a.host) === p.port &&
               (a.protocol || "tcp") === "tcp",
           ),
-      ) || nodePorts[0];
+      ) || selectablePorts[0];
     setAllocations((old) => [
       ...old,
       {
@@ -1080,9 +1126,9 @@ export function ServerConfiguration({
               <div>
                 <div className="subsection-label">PORT ALLOCATIONS</div>
                 <small>
-                  {nodePorts.length} host ports loaded from the node. Select a
-                  port from any node IP; the IP updates with your selection.
-                  UFW and your hosting provider's firewall must also allow it.
+                  Choose a Docker bind IP and port. Players connect through the
+                  node’s public address shown on the server page. Host and
+                  provider firewalls must also allow the port.
                 </small>
               </div>
               <Button
@@ -1109,13 +1155,13 @@ export function ServerConfiguration({
                     }
                   />
                 </Field>
-                <Field label="Node IP">
+                <Field label="Docker bind IP">
                   <select
                     required
                     value={a.ip}
                     onChange={(e) => {
                       const ip = e.target.value;
-                      const port = nodePorts.find(
+                      const port = selectablePorts.find(
                         (p) =>
                           p.ip === ip &&
                           !allocations.some(
@@ -1154,21 +1200,21 @@ export function ServerConfiguration({
                       );
                     }}
                   >
-                    {!nodePorts.some(
+                    {!selectablePorts.some(
                       (p) => p.ip === a.ip && p.port === Number(a.host),
                     ) && Number(a.host) > 0 && (
                       <option value={`${a.ip}|${a.host}`}>
                         {a.host} — {a.ip} (current allocation)
                       </option>
                     )}
-                    {!nodePorts.length && (
+                    {!selectablePorts.length && (
                       <option value="" disabled>
                         No ports allocated on this node
                       </option>
                     )}
-                    {[...new Set(nodePorts.map((p) => p.ip))].map((ip) => (
+                    {[...new Set(selectablePorts.map((p) => p.ip))].map((ip) => (
                       <optgroup key={ip} label={ip}>
-                        {nodePorts
+                        {selectablePorts
                           .filter((p) => p.ip === ip)
                           .map((p) => (
                             <option

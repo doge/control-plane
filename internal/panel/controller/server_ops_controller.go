@@ -4,7 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"fmt"
-	"io"
+	"mime"
 	"net/http"
 	"path"
 	"strings"
@@ -37,6 +37,8 @@ func (c *Controller) serverOps(w http.ResponseWriter, r *http.Request) {
 		}
 	} else {
 		switch bits[1] {
+		case "name":
+			permission = "servers.update"
 		case "console":
 			permission = "servers.console"
 		case "actions":
@@ -91,6 +93,10 @@ func (c *Controller) serverOps(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		http.NotFound(w, r)
+		return
+	}
+	if len(bits) == 2 && bits[1] == "name" {
+		c.renameServer(w, r, server)
 		return
 	}
 	if bits[1] == "console" {
@@ -163,7 +169,7 @@ func (c *Controller) updateServerConfig(w http.ResponseWriter, r *http.Request, 
 	c.hydrateNodeNetwork(r.Context(), &node)
 	if r.Method == http.MethodGet {
 		if len(s.Allocations) == 0 {
-			allocations, address, allocationErr := c.allocatePorts(r.Context(), node, value)
+			allocations, address, allocationErr := c.allocatePorts(r.Context(), node, value, nil)
 			if allocationErr == nil {
 				s.Allocations, s.Address = allocations, address
 			}
@@ -205,6 +211,19 @@ func (c *Controller) updateServerConfig(w http.ResponseWriter, r *http.Request, 
 				break
 			}
 		}
+		if len(node.Stats.BindIPs) > 0 {
+			localBindIP := false
+			for _, ip := range node.Stats.BindIPs {
+				if raw.IP == ip {
+					localBindIP = true
+					break
+				}
+			}
+			if !localBindIP {
+				writeJSON(w, 400, map[string]string{"error": fmt.Sprintf("%s is not a local IP on this node; choose a detected Docker bind IP", raw.IP)})
+				return
+			}
+		}
 		if !allowed {
 			writeJSON(w, 400, map[string]string{"error": fmt.Sprintf("%s:%d is not an allocated port on this node", raw.IP, raw.Host)})
 			return
@@ -243,16 +262,9 @@ func (c *Controller) updateServerConfig(w http.ResponseWriter, r *http.Request, 
 		s.Variables = resolved
 	}
 	s.CPULimit, s.MemoryMB, s.Allocations, s.LaunchCommand, s.GameCommand = in.CPULimit, in.MemoryMB, allocations, strings.TrimSpace(in.LaunchCommand), ""
-	if len(allocations) > 0 {
-		s.Address = allocations[0].IP
-	} else {
-		ips := node.IPs
-		if len(ips) == 0 {
-			ips, _ = resolveAllIPs(node.Address)
-		}
-		if len(ips) > 0 {
-			s.Address = ips[0]
-		}
+	s.Address = node.Address
+	if s.Address == "" && len(node.IPs) > 0 {
+		s.Address = node.IPs[0]
 	}
 	if s.ContainerID != "" {
 		n, ok := c.nodeForServer(w, r, s)
@@ -565,7 +577,7 @@ func (c *Controller) fileRequest(w http.ResponseWriter, r *http.Request, s model
 		return
 	}
 	timeout := 3 * time.Minute
-	if typ == "file_unzip" {
+	if typ == "file_unzip" || typ == "file_zip" || typ == "file_upload" || typ == "file_download_begin" {
 		timeout = 30 * time.Minute
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), timeout)
@@ -580,6 +592,80 @@ func (c *Controller) fileRequest(w http.ResponseWriter, r *http.Request, s model
 		p = map[string]any{}
 	}
 	writeJSON(w, 200, p)
+}
+
+// downloadServerFile streams a staged node file to the browser in bounded chunks.
+func (c *Controller) downloadServerFile(w http.ResponseWriter, r *http.Request, server models.Server, root, filePath string) {
+	if server.ContainerID == "" {
+		writeJSON(w, 409, map[string]string{"error": "server has no container id; deploy it first"})
+		return
+	}
+	node, ok := c.nodeForServer(w, r, server)
+	if !ok {
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Minute)
+	defer cancel()
+	id := randomToken(16)
+	request := func(kind string, payload map[string]any) (map[string]any, error) {
+		payload["root"] = root
+		return node.request(ctx, map[string]any{
+			"type": kind, "serverId": server.ID.Hex(), "containerId": server.ContainerID, "payload": payload,
+		})
+	}
+	prepared, err := request("file_download_begin", map[string]any{"downloadId": id, "path": filePath})
+	if err != nil {
+		writeJSON(w, 502, map[string]string{"error": err.Error()})
+		return
+	}
+	defer func() {
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cleanupCancel()
+		_, _ = node.request(cleanupCtx, map[string]any{
+			"type": "file_download_finish", "serverId": server.ID.Hex(), "containerId": server.ContainerID,
+			"payload": map[string]any{"downloadId": id, "root": root},
+		})
+	}()
+	payload, _ := prepared["payload"].(map[string]any)
+	if payload == nil {
+		writeJSON(w, 502, map[string]string{"error": "node returned no download details"})
+		return
+	}
+	size, ok := payload["size"].(float64)
+	if !ok || size < 0 {
+		writeJSON(w, 502, map[string]string{"error": "node returned an invalid file size"})
+		return
+	}
+	name, _ := payload["name"].(string)
+	if name == "" {
+		name = path.Base(filePath)
+	}
+	w.Header().Set("Content-Type", "application/octet-stream")
+	w.Header().Set("Content-Disposition", mime.FormatMediaType("attachment", map[string]string{"filename": name}))
+	w.Header().Set("Content-Length", fmt.Sprintf("%.0f", size))
+	const chunkSize = 1 << 20
+	for offset := int64(0); offset < int64(size); {
+		result, err := request("file_download_chunk", map[string]any{
+			"downloadId": id, "offset": fmt.Sprintf("%d", offset), "limit": chunkSize,
+		})
+		if err != nil {
+			return
+		}
+		chunkPayload, _ := result["payload"].(map[string]any)
+		encoded, _ := chunkPayload["data"].(string)
+		chunk, err := base64.StdEncoding.DecodeString(encoded)
+		if err != nil || len(chunk) == 0 {
+			return
+		}
+		written, err := w.Write(chunk)
+		offset += int64(written)
+		if err != nil || written != len(chunk) {
+			return
+		}
+		if flusher, ok := w.(http.Flusher); ok {
+			flusher.Flush()
+		}
+	}
 }
 func (c *Controller) serverFiles(w http.ResponseWriter, r *http.Request, s models.Server, tail []string) {
 	root := "/home/container"
@@ -658,16 +744,11 @@ func (c *Controller) serverFilesAtRoot(w http.ResponseWriter, r *http.Request, s
 				return
 			}
 			defer f.Close()
-			data, err := io.ReadAll(f)
-			if err != nil {
-				writeJSON(w, 500, map[string]string{"error": "could not read uploaded file"})
-				return
-			}
 			dst := r.FormValue("path")
 			if dst == "" {
 				dst = path.Join(root, h.Filename)
 			}
-			request("file_upload", dst, map[string]any{"path": dst, "data": base64.StdEncoding.EncodeToString(data)})
+			c.uploadServerFile(w, r, s, root, dst, f, h.Size)
 			return
 		case "from-url":
 			if r.Method != http.MethodPost {
@@ -719,6 +800,27 @@ func (c *Controller) serverFilesAtRoot(w http.ResponseWriter, r *http.Request, s
 				return
 			}
 			request("file_unzip", in.Path, map[string]any{"path": in.Path})
+			return
+		case "zip":
+			if r.Method != http.MethodPost {
+				http.Error(w, "method not allowed", 405)
+				return
+			}
+			var in struct {
+				Path string `json:"path"`
+			}
+			if bodyJSON(r, &in) != nil || strings.TrimSpace(in.Path) == "" {
+				writeJSON(w, 400, map[string]string{"error": "folder path is required"})
+				return
+			}
+			request("file_zip", in.Path, map[string]any{"path": in.Path})
+			return
+		case "download":
+			if r.Method != http.MethodGet || strings.TrimSpace(filePath) == "" {
+				writeJSON(w, 400, map[string]string{"error": "file path is required"})
+				return
+			}
+			c.downloadServerFile(w, r, s, root, filePath)
 			return
 		}
 	}

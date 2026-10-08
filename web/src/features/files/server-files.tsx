@@ -89,7 +89,7 @@ export function ServerWorkspace({
     </section>
   );
 }
-/** Browse, edit, upload, move, extract, and delete server files. */
+/** Browse, edit, upload, move, archive, download, and delete server files. */
 export function FileBrowser({
   server,
   root = "/data",
@@ -177,6 +177,26 @@ export function FileBrowser({
     } finally {
       setBusy(false);
     }
+  };
+  const zipEntry = async (entry: FileEntry) => {
+    setBusy(true);
+    try {
+      const response = await api<{ path: string }>(`${basePath}/zip`, {
+        method: "POST",
+        body: JSON.stringify({ path: entryPath(entry.name) }),
+      });
+      showToast(`Created ${response.path}.`, "success");
+      await load();
+    } catch (e: unknown) {
+      showToast(errorMessage(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+  const downloadEntry = (entry: FileEntry) => {
+    const url = `${basePath}/download?path=${encodeURIComponent(entryPath(entry.name))}`;
+    window.location.assign(url);
+    setContextMenu(null);
   };
   useEffect(() => {
     void load(root);
@@ -519,8 +539,10 @@ export function FileBrowser({
               if (source) void moveEntry(source, entryPath(e.name));
             }}
             onContextMenu={(event) => {
-              if (!canManage) return;
+              if (e.directory && !canManage) return;
               event.preventDefault();
+              const menuItems =
+                (e.directory ? Number(canManage) : 1) + Number(canManage);
               setContextMenu({
                 entry: e,
                 x: Math.max(
@@ -529,7 +551,10 @@ export function FileBrowser({
                 ),
                 y: Math.max(
                   8,
-                  Math.min(event.clientY, window.innerHeight - 54),
+                  Math.min(
+                    event.clientY,
+                    window.innerHeight - (menuItems * 34 + 16),
+                  ),
                 ),
               });
             }}
@@ -652,7 +677,15 @@ export function FileBrowser({
         <FileContextMenu
           x={contextMenu.x}
           y={contextMenu.y}
+          isFolder={contextMenu.entry.directory}
+          canManage={canManage}
           onClose={() => setContextMenu(null)}
+          onZip={() => {
+            const entry = contextMenu.entry;
+            setContextMenu(null);
+            void zipEntry(entry);
+          }}
+          onDownload={() => downloadEntry(contextMenu.entry)}
           onMove={() => {
             setMoveDestination(dir);
             setMoving(contextMenu.entry);

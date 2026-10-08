@@ -49,15 +49,24 @@ type Session struct {
 type Node struct {
 	ID              bson.ObjectID        `bson:"_id,omitempty" json:"id"`
 	Name            string               `bson:"name" json:"name"`
+	NameKey         string               `bson:"nameKey,omitempty" json:"-"`
 	Region          string               `bson:"region" json:"region"`
 	Address         string               `bson:"address" json:"address"`
 	IPs             []string             `bson:"ips,omitempty" json:"ips,omitempty"`
 	PortAllocations []NodePortAllocation `bson:"portAllocations,omitempty" json:"portAllocations,omitempty"`
 	Stats           NodeStats            `bson:"stats,omitempty" json:"stats"`
+	ResourceUsage   NodeResourceUsage    `bson:"-" json:"resourceUsage,omitempty"`
 	TokenHash       string               `bson:"tokenHash" json:"-"`
 	Status          string               `bson:"status" json:"status"`
 	LastSeen        time.Time            `bson:"lastSeen" json:"lastSeen"`
 	CreatedAt       time.Time            `bson:"createdAt" json:"createdAt"`
+}
+
+// NodeResourceUsage reports limits reserved by servers assigned to a node.
+type NodeResourceUsage struct {
+	CPUCores     float64 `json:"cpuCores"`
+	MemoryMB     int64   `json:"memoryMB"`
+	StorageBytes int64   `json:"storageBytes"`
 }
 
 type NodePortAllocation struct {
@@ -68,6 +77,7 @@ type NodePortAllocation struct {
 type NodeStats struct {
 	CPUThreads        int       `bson:"cpuThreads" json:"cpuThreads"`
 	Architecture      string    `bson:"architecture" json:"architecture"`
+	BindIPs           []string  `bson:"bindIPs,omitempty" json:"bindIPs,omitempty"`
 	Kernel            string    `bson:"kernel" json:"kernel"`
 	CPUPercent        float64   `bson:"cpuPercent" json:"cpuPercent"`
 	MemoryUsedBytes   uint64    `bson:"memoryUsedBytes" json:"memoryUsedBytes"`

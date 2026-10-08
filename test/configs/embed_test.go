@@ -16,8 +16,8 @@ func TestBuiltInConfigsAreValidAndModular(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(defaults) != 6 {
-		t.Fatalf("configfiles.Defaults() returned %d Configs, want 6", len(defaults))
+	if len(defaults) != 7 {
+		t.Fatalf("configfiles.Defaults() returned %d Configs, want 7", len(defaults))
 	}
 	bySlug := make(map[string]int, len(defaults))
 	for _, value := range defaults {
@@ -38,7 +38,7 @@ func TestBuiltInConfigsAreValidAndModular(t *testing.T) {
 			t.Errorf("Config %s has no install script", value.Slug)
 		}
 	}
-	for _, slug := range []string{"paper-minecraft", "minecraft-java", "cs2", "dayz", "rust", "steamcmd-template"} {
+	for _, slug := range []string{"paper-minecraft", "minecraft-java", "fabric-minecraft", "cs2", "dayz", "rust", "steamcmd-template"} {
 		if bySlug[slug] != 1 {
 			t.Errorf("expected one built-in Config with slug %q", slug)
 		}

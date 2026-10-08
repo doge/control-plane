@@ -3,6 +3,7 @@ package controller
 import (
 	"context"
 	"errors"
+	"net"
 	"net/http"
 	"net/url"
 	"strings"
@@ -15,6 +16,8 @@ import (
 )
 
 var nodeUpgrader = websocket.Upgrader{CheckOrigin: SameWebSocketOrigin}
+
+const consoleHistoryLimit = 256 * 1024
 
 type consoleClient struct {
 	conn    *websocket.Conn
@@ -42,23 +45,35 @@ func SameWebSocketOrigin(r *http.Request) bool {
 }
 
 type nodeSession struct {
-	nodeID    bson.ObjectID
-	conn      *websocket.Conn
-	writeMu   sync.Mutex
-	pendingMu sync.Mutex
-	pending   map[string]chan map[string]any
-	clientsMu sync.RWMutex
-	clients   map[string]map[*websocket.Conn]*consoleClient
+	nodeID          bson.ObjectID
+	conn            *websocket.Conn
+	writeMu         sync.Mutex
+	pendingMu       sync.Mutex
+	pending         map[string]chan map[string]any
+	clientsMu       sync.RWMutex
+	clients         map[string]map[*websocket.Conn]*consoleClient
+	consoleLogs     map[string][]string
+	consoleLogBytes map[string]int
 }
 
 func newNodeSession(nodeID bson.ObjectID, conn *websocket.Conn) *nodeSession {
-	return &nodeSession{nodeID: nodeID, conn: conn, pending: make(map[string]chan map[string]any), clients: make(map[string]map[*websocket.Conn]*consoleClient)}
+	return &nodeSession{
+		nodeID: nodeID, conn: conn, pending: make(map[string]chan map[string]any),
+		clients:     make(map[string]map[*websocket.Conn]*consoleClient),
+		consoleLogs: make(map[string][]string), consoleLogBytes: make(map[string]int),
+	}
 }
 
 func (n *nodeSession) send(message any) error {
 	n.writeMu.Lock()
 	defer n.writeMu.Unlock()
-	if err := n.conn.SetWriteDeadline(time.Now().Add(10 * time.Second)); err != nil {
+	writeTimeout := 10 * time.Second
+	if request, ok := message.(map[string]any); ok {
+		if kind, _ := request["type"].(string); strings.HasPrefix(kind, "file_upload_") {
+			writeTimeout = 30 * time.Minute
+		}
+	}
+	if err := n.conn.SetWriteDeadline(time.Now().Add(writeTimeout)); err != nil {
 		return err
 	}
 	return n.conn.WriteJSON(message)
@@ -95,10 +110,12 @@ func (n *nodeSession) request(ctx context.Context, message map[string]any) (map[
 func (n *nodeSession) addConsoleClient(serverID string, conn *websocket.Conn) *consoleClient {
 	n.clientsMu.Lock()
 	defer n.clientsMu.Unlock()
+	client := &consoleClient{conn: conn}
+	history := strings.Join(n.consoleLogs[serverID], "")
+	_ = client.write(map[string]any{"type": "console_history", "payload": map[string]string{"text": history}})
 	if n.clients[serverID] == nil {
 		n.clients[serverID] = make(map[*websocket.Conn]*consoleClient)
 	}
-	client := &consoleClient{conn: conn}
 	n.clients[serverID][conn] = client
 	return client
 }
@@ -110,20 +127,45 @@ func (n *nodeSession) removeConsoleClient(serverID string, conn *websocket.Conn)
 	delete(clients, conn)
 	if len(clients) == 0 {
 		delete(n.clients, serverID)
+		delete(n.consoleLogs, serverID)
+		delete(n.consoleLogBytes, serverID)
 		return true
 	}
 	return false
 }
 
 func (n *nodeSession) publishConsole(serverID string, message map[string]any) {
-	n.clientsMu.RLock()
+	n.clientsMu.Lock()
+	if messageType, _ := message["type"].(string); messageType == "console_output" {
+		if payload, ok := message["payload"].(map[string]any); ok {
+			if text, ok := payload["text"].(string); ok && text != "" {
+				n.rememberConsoleOutput(serverID, text)
+			}
+		}
+	}
 	clients := make([]*consoleClient, 0, len(n.clients[serverID]))
 	for _, client := range n.clients[serverID] {
 		clients = append(clients, client)
 	}
-	n.clientsMu.RUnlock()
+	n.clientsMu.Unlock()
 	for _, client := range clients {
 		_ = client.write(message)
+	}
+}
+
+// rememberConsoleOutput keeps a bounded replay window for browsers joining an active console.
+func (n *nodeSession) rememberConsoleOutput(serverID, text string) {
+	if len(text) > consoleHistoryLimit {
+		text = text[len(text)-consoleHistoryLimit:]
+		n.consoleLogs[serverID] = nil
+		n.consoleLogBytes[serverID] = 0
+	}
+	n.consoleLogs[serverID] = append(n.consoleLogs[serverID], text)
+	n.consoleLogBytes[serverID] += len(text)
+	for n.consoleLogBytes[serverID] > consoleHistoryLimit && len(n.consoleLogs[serverID]) > 1 {
+		first := n.consoleLogs[serverID][0]
+		n.consoleLogs[serverID] = n.consoleLogs[serverID][1:]
+		n.consoleLogBytes[serverID] -= len(first)
 	}
 }
 
@@ -149,12 +191,18 @@ func (a *App) syncManagedServerStatuses(ctx context.Context, nodeID bson.ObjectI
 		if status != "running" && status != "stopped" && status != "paused" {
 			continue
 		}
+		filter := bson.M{"_id": serverID, "nodeId": nodeID}
 		set := bson.M{"status": status, "updatedAt": time.Now()}
 		if containerID := strings.TrimSpace(text(item["containerId"])); containerID != "" {
 			set["containerId"] = containerID
+			filter["$or"] = bson.A{
+				bson.M{"status": bson.M{"$ne": status}},
+				bson.M{"containerId": bson.M{"$ne": containerID}},
+			}
+		} else {
+			filter["status"] = bson.M{"$ne": status}
 		}
-		_, _ = a.db.Collection("servers").UpdateOne(ctx,
-			bson.M{"_id": serverID, "nodeId": nodeID}, bson.M{"$set": set})
+		_, _ = a.db.Collection("servers").UpdateOne(ctx, filter, bson.M{"$set": set})
 	}
 }
 
@@ -187,7 +235,7 @@ func (a *App) nodeConnect(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		return
 	}
-	_ = conn.SetReadDeadline(time.Now().Add(20 * time.Second))
+	_ = conn.SetReadDeadline(time.Now().Add(2 * time.Minute))
 	session := newNodeSession(node.ID, conn)
 	a.nodesMu.Lock()
 	previous := a.nodeSessions[node.ID]
@@ -228,7 +276,7 @@ func (a *App) nodeConnect(w http.ResponseWriter, r *http.Request) {
 		if err := conn.ReadJSON(&message); err != nil {
 			return
 		}
-		_ = conn.SetReadDeadline(time.Now().Add(20 * time.Second))
+		_ = conn.SetReadDeadline(time.Now().Add(2 * time.Minute))
 		if message["type"] == "hello" || message["type"] == "pong" {
 			set := bson.M{"status": "online", "lastSeen": time.Now()}
 			if message["type"] == "hello" {
@@ -240,6 +288,11 @@ func (a *App) nodeConnect(w http.ResponseWriter, r *http.Request) {
 					if storageMode, ok := payload["storageMode"].(string); ok && storageMode != "" {
 						set["stats.storageMode"] = storageMode
 					}
+					if bindIPs, ok := payload["bindIPs"].([]any); ok {
+						detected := parseNodeBindIPs(bindIPs)
+						set["stats.bindIPs"] = detected
+						a.reconcileNodeBindAllocations(r.Context(), *node, detected)
+					}
 					a.syncManagedServerStatuses(r.Context(), node.ID, payload["serverStatuses"])
 				}
 			}
@@ -249,6 +302,11 @@ func (a *App) nodeConnect(w http.ResponseWriter, r *http.Request) {
 			if stats, ok := message["payload"].(map[string]any); ok {
 				stats["updatedAt"] = time.Now()
 				_, _ = a.db.Collection("nodes").UpdateOne(r.Context(), bson.M{"_id": node.ID}, bson.M{"$set": bson.M{"stats": stats, "lastSeen": time.Now(), "status": "online"}})
+			}
+		}
+		if message["type"] == "server_statuses" {
+			if payload, ok := message["payload"].(map[string]any); ok {
+				a.syncManagedServerStatuses(r.Context(), node.ID, payload["serverStatuses"])
 			}
 		}
 		if requestID, ok := message["requestId"].(string); ok {
@@ -264,6 +322,28 @@ func (a *App) nodeConnect(w http.ResponseWriter, r *http.Request) {
 			session.publishConsole(serverID, message)
 		}
 	}
+}
+
+// parseNodeBindIPs keeps only valid IP strings reported by an authenticated node agent.
+func parseNodeBindIPs(values []any) []string {
+	addresses := make([]string, 0, len(values))
+	seen := make(map[string]bool, len(values))
+	for _, value := range values {
+		text, ok := value.(string)
+		if !ok {
+			continue
+		}
+		ip := net.ParseIP(strings.TrimSpace(text))
+		if ip == nil {
+			continue
+		}
+		canonical := ip.String()
+		if !seen[canonical] {
+			addresses = append(addresses, canonical)
+			seen[canonical] = true
+		}
+	}
+	return addresses
 }
 
 func (a *App) serverConsole(w http.ResponseWriter, r *http.Request) {

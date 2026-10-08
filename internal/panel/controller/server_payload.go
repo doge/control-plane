@@ -114,7 +114,11 @@ func BuildServerCreatePayload(server models.Server, value models.Config) map[str
 			workingDirectory = dataDirectory
 		}
 		entrypoint = []any{"/bin/bash", "-lc"}
-		command = []any{resolveStartup(launch, vars)}
+		resolved := resolveStartup(launch, vars)
+		if isDirectStartupCommand(resolved) && !strings.HasPrefix(strings.TrimSpace(resolved), "exec ") {
+			resolved = "exec " + resolved
+		}
+		command = []any{resolved}
 	}
 	var install any
 	if spec.Install != nil {
@@ -131,6 +135,12 @@ func BuildServerCreatePayload(server models.Server, value models.Config) map[str
 		"launchCommand": launch, "workingDir": workingDirectory, "dataDirectory": dataDirectory,
 		"install": install, "user": spec.User,
 	}
+}
+
+// isDirectStartupCommand identifies one-line launches that can become the container's main process.
+func isDirectStartupCommand(command string) bool {
+	command = strings.TrimSpace(command)
+	return command != "" && !strings.HasPrefix(command, "#!") && !strings.ContainsAny(command, "\r\n;&|<>")
 }
 
 func allocatedPorts(allocations []models.PortAllocation) []any {

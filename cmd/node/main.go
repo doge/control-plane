@@ -23,10 +23,7 @@ func main() {
 		}
 		return
 	}
-	cfg := node.Config{PanelURL: os.Getenv("PANEL_URL"), NodeToken: os.Getenv("NODE_TOKEN"), NodeName: os.Getenv("NODE_NAME"), Listen: os.Getenv("NODE_ADDR")}
-	if cfg.NodeName == "" {
-		cfg.NodeName = "node-01"
-	}
+	cfg := node.Config{PanelURL: os.Getenv("PANEL_URL"), NodeToken: os.Getenv("NODE_TOKEN"), Listen: os.Getenv("NODE_ADDR")}
 	if cfg.Listen == "" {
 		cfg.Listen = ":8090"
 	}

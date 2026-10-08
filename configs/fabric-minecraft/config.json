@@ -1,0 +1,28 @@
+{
+  "name": "Fabric Minecraft",
+  "slug": "fabric-minecraft",
+  "description": "Fabric Minecraft Java server. Downloads the selected Fabric server launcher before starting.",
+  "author": "Control Plane",
+  "spec": {
+    "version": 1,
+    "dockerImages": ["eclipse-temurin:25-jre"],
+    "startup": "java -Xms128M -XX:MaxRAMPercentage=75 -jar /data/{{SERVER_JARFILE}} nogui",
+    "stop": "stop",
+    "user": "1000:1000",
+    "dataDirectory": "/data",
+    "resources": {"cpuLimit": 2, "memoryMB": 2048},
+    "install": {
+      "image": "debian:bookworm-slim",
+      "entrypoint": "/bin/bash",
+      "scriptFile": "install.sh"
+    },
+    "environment": {"EULA": "TRUE"},
+    "ports": [{"name": "Minecraft", "container": 25565, "protocol": "tcp"}],
+    "variables": [
+      {"name": "VERSION", "type": "text", "default": "LATEST", "ui": true, "description": "Minecraft version to install, or LATEST."},
+      {"name": "LOADER_VERSION", "type": "text", "default": "LATEST", "ui": true, "description": "Fabric Loader version to install, or LATEST."},
+      {"name": "INSTALLER_VERSION", "type": "text", "default": "LATEST", "ui": true, "description": "Fabric launcher version to use, or LATEST."},
+      {"name": "SERVER_JARFILE", "type": "text", "default": "fabric-server.jar", "ui": true, "description": "Launcher jar filename used by the startup command."}
+    ]
+  }
+}

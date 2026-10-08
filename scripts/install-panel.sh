@@ -140,7 +140,8 @@ ProtectSystem=full
 WantedBy=multi-user.target
 UNIT
 systemctl daemon-reload
-systemctl enable --now control-plane-panel
+systemctl enable control-plane-panel
+systemctl restart control-plane-panel
 if [[ -n "$PANEL_DOMAIN" ]]; then
   /opt/control-plane/scripts/install-https.sh "$PANEL_DOMAIN" "$CERTIFICATE_EMAIL"
   cat <<INFO

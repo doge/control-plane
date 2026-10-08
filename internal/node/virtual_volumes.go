@@ -9,9 +9,11 @@ import (
 	"runtime"
 	"strings"
 	"syscall"
+
+	"github.com/example/control-plane/internal/resources"
 )
 
-const virtualVolumeOverhead int64 = 128 * 1024 * 1024
+const virtualVolumeOverhead = resources.VolumeOverheadBytes
 
 func virtualVolumeRoot(id string) (string, error) {
 	if len(id) != 24 {

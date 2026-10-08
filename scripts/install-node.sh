@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-if [[ $# -ne 4 ]]; then
-  echo "Usage: sudo $0 <control-plane-linux-ARCH.tar.gz | bundle-directory> <panel-url> <node-token> <node-name>" >&2
+if [[ $# -ne 3 ]]; then
+  echo "Usage: sudo $0 <control-plane-linux-ARCH.tar.gz | bundle-directory> <panel-url> <node-token>" >&2
   exit 2
 fi
 if [[ "${EUID}" -ne 0 ]]; then
@@ -22,17 +22,12 @@ fi
 SOURCE="$1"
 PANEL_URL="${2%/}"
 NODE_TOKEN="$3"
-NODE_NAME="$4"
 if [[ ! "$PANEL_URL" =~ ^https?://[A-Za-z0-9.-]+(:[0-9]+)?$ ]]; then
   echo "Panel URL must be an HTTP or HTTPS origin, such as https://panel.example.com." >&2
   exit 2
 fi
 if [[ ! "$NODE_TOKEN" =~ ^[A-Za-z0-9._~-]+$ ]]; then
   echo "Node tokens must contain only letters, numbers, dot, underscore, tilde, and hyphen." >&2
-  exit 2
-fi
-if [[ ! "$NODE_NAME" =~ ^[A-Za-z0-9._-]{1,64}$ ]]; then
-  echo "Node name may contain letters, numbers, dots, underscores, and hyphens (up to 64 characters)." >&2
   exit 2
 fi
 
@@ -93,7 +88,6 @@ install -d -o root -g root -m 0750 /etc/control-plane
 cat > /etc/control-plane/node.env <<ENV
 PANEL_URL=$PANEL_URL
 NODE_TOKEN=$NODE_TOKEN
-NODE_NAME=$NODE_NAME
 NODE_ADDR=127.0.0.1:8090
 ENV
 chmod 0600 /etc/control-plane/node.env

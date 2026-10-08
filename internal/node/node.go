@@ -16,6 +16,7 @@ import (
 	"path"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -30,7 +31,7 @@ import (
 	"github.com/gorilla/websocket"
 )
 
-type Config struct{ PanelURL, NodeToken, NodeName, Listen string }
+type Config struct{ PanelURL, NodeToken, Listen string }
 
 type Agent struct {
 	cfg            Config
@@ -146,7 +147,7 @@ func (a *Agent) connect(ctx context.Context) error {
 	} else if strings.HasPrefix(u, "http") {
 		u = "ws" + u[4:]
 	}
-	u += "/api/node/connect?name=" + url.QueryEscape(a.cfg.NodeName)
+	u += "/api/node/connect"
 	header := http.Header{}
 	header.Set("Authorization", "Bearer "+a.cfg.NodeToken)
 	conn, _, err := websocket.DefaultDialer.DialContext(ctx, u, header)
@@ -165,12 +166,12 @@ func (a *Agent) connect(ctx context.Context) error {
 		}
 	}()
 	defer close(finished)
-	_ = conn.SetReadDeadline(time.Now().Add(20 * time.Second))
+	_ = conn.SetReadDeadline(time.Now().Add(2 * time.Minute))
 	statuses, statusErr := a.serverStatuses(context.Background())
 	if statusErr != nil {
 		logf("read managed server states: %v", statusErr)
 	}
-	if err := a.send(conn, Message{Type: "hello", Payload: map[string]any{"name": a.cfg.NodeName, "architecture": runtime.GOARCH, "storageMode": storageMode(), "serverStatuses": statuses, "time": time.Now()}}); err != nil {
+	if err := a.send(conn, Message{Type: "hello", Payload: map[string]any{"architecture": runtime.GOARCH, "storageMode": storageMode(), "bindIPs": nodeBindIPs(), "serverStatuses": statuses, "time": time.Now()}}); err != nil {
 		return err
 	}
 	statsCtx, stopStats := context.WithCancel(ctx)
@@ -181,13 +182,13 @@ func (a *Agent) connect(ctx context.Context) error {
 		if err := conn.ReadJSON(&message); err != nil {
 			return err
 		}
-		_ = conn.SetReadDeadline(time.Now().Add(20 * time.Second))
+		_ = conn.SetReadDeadline(time.Now().Add(2 * time.Minute))
 		switch message.Type {
 		case "ping":
 			if err := a.send(conn, Message{Type: "pong"}); err != nil {
 				return err
 			}
-		case "create_server", "server_action", "server_volume_create", "server_volume_resize", "server_volume_delete", "server_backup", "server_backup_delete", "server_restore", "server_delete", "server_inspect", "node_resources", "node_firewall_allow", "node_container_delete", "node_image_delete", "file_list", "file_read", "file_write", "file_upload", "file_delete", "file_upload_url", "file_move", "file_unzip":
+		case "create_server", "server_action", "server_volume_create", "server_volume_resize", "server_volume_delete", "server_backup", "server_backup_delete", "server_restore", "server_delete", "server_inspect", "node_resources", "node_firewall_allow", "node_container_delete", "node_image_delete", "file_list", "file_read", "file_write", "file_upload", "file_upload_begin", "file_upload_chunk", "file_upload_finish", "file_upload_abort", "file_delete", "file_upload_url", "file_move", "file_unzip", "file_zip", "file_download_begin", "file_download_chunk", "file_download_finish":
 			go a.dispatch(conn, message)
 		case "console_attach":
 			if err := a.attachConsole(conn, message); err != nil {
@@ -253,12 +254,20 @@ func (a *Agent) statsLoop(ctx context.Context, conn *websocket.Conn) {
 			if err := a.send(conn, Message{Type: "node_stats", Payload: a.collectStats()}); err != nil {
 				return
 			}
+			statuses, err := a.serverStatuses(ctx)
+			if err != nil {
+				logf("read managed server states: %v", err)
+				continue
+			}
+			if err := a.send(conn, Message{Type: "server_statuses", Payload: map[string]any{"serverStatuses": statuses}}); err != nil {
+				return
+			}
 		}
 	}
 }
 
 func (a *Agent) collectStats() map[string]any {
-	stats := map[string]any{"cpuThreads": runtime.NumCPU(), "architecture": runtime.GOARCH, "storageMode": storageMode(), "kernel": "unknown", "cpuPercent": 0.0, "memoryUsedBytes": uint64(0), "memoryTotalBytes": uint64(0), "storageUsedBytes": uint64(0), "storageTotalBytes": uint64(0)}
+	stats := map[string]any{"cpuThreads": runtime.NumCPU(), "architecture": runtime.GOARCH, "storageMode": storageMode(), "bindIPs": nodeBindIPs(), "kernel": "unknown", "cpuPercent": 0.0, "memoryUsedBytes": uint64(0), "memoryTotalBytes": uint64(0), "storageUsedBytes": uint64(0), "storageTotalBytes": uint64(0)}
 	if out, err := exec.Command("uname", "-r").Output(); err == nil {
 		stats["kernel"] = strings.TrimSpace(string(out))
 	}
@@ -375,6 +384,64 @@ func (a *Agent) collectStats() map[string]any {
 	return stats
 }
 
+// nodeBindIPs returns usable host-interface IPs, excluding Docker-managed bridges.
+func nodeBindIPs() []string {
+	interfaces, err := net.Interfaces()
+	if err != nil {
+		return nil
+	}
+
+	addresses := make([]string, 0, len(interfaces))
+	seen := make(map[string]bool)
+	for _, iface := range interfaces {
+		if iface.Flags&net.FlagUp == 0 {
+			continue
+		}
+		if iface.Flags&net.FlagLoopback != 0 {
+			addresses = appendUniqueNodeIP(addresses, seen, "127.0.0.1")
+			addresses = appendUniqueNodeIP(addresses, seen, "::1")
+			continue
+		}
+		if strings.HasPrefix(iface.Name, "docker") || strings.HasPrefix(iface.Name, "br-") || strings.HasPrefix(iface.Name, "veth") {
+			continue
+		}
+		ifaceAddresses, err := iface.Addrs()
+		if err != nil {
+			continue
+		}
+		for _, address := range ifaceAddresses {
+			var ip net.IP
+			switch value := address.(type) {
+			case *net.IPNet:
+				ip = value.IP
+			case *net.IPAddr:
+				ip = value.IP
+			}
+			if ip == nil || !ip.IsGlobalUnicast() {
+				continue
+			}
+			value := ip.String()
+			addresses = appendUniqueNodeIP(addresses, seen, value)
+		}
+	}
+	sort.Slice(addresses, func(i, j int) bool {
+		left, right := net.ParseIP(addresses[i]), net.ParseIP(addresses[j])
+		if (left.To4() != nil) != (right.To4() != nil) {
+			return left.To4() != nil
+		}
+		return addresses[i] < addresses[j]
+	})
+	return addresses
+}
+
+func appendUniqueNodeIP(addresses []string, seen map[string]bool, ip string) []string {
+	if seen[ip] {
+		return addresses
+	}
+	seen[ip] = true
+	return append(addresses, ip)
+}
+
 func (a *Agent) send(conn *websocket.Conn, message any) error {
 	a.writeMu.Lock()
 	defer a.writeMu.Unlock()
@@ -423,7 +490,7 @@ func (a *Agent) handleRequest(m Message) (map[string]any, error) {
 		return a.deleteServer(ctx, m, payload)
 	case "server_action":
 		return a.serverAction(ctx, m, payload)
-	case "file_list", "file_read", "file_write", "file_upload", "file_delete", "file_upload_url", "file_move", "file_unzip":
+	case "file_list", "file_read", "file_write", "file_upload", "file_upload_begin", "file_upload_chunk", "file_upload_finish", "file_upload_abort", "file_delete", "file_upload_url", "file_move", "file_unzip", "file_zip", "file_download_begin", "file_download_chunk", "file_download_finish":
 		return a.handleFileRequest(ctx, m, payload)
 	default:
 		return nil, fmt.Errorf("unsupported node operation")
@@ -432,7 +499,7 @@ func (a *Agent) handleRequest(m Message) (map[string]any, error) {
 
 func requestTimeout(message Message, payload map[string]any) time.Duration {
 	switch message.Type {
-	case "server_backup", "server_restore", "server_delete", "server_volume_create", "server_volume_resize", "server_volume_delete", "file_unzip":
+	case "server_backup", "server_restore", "server_delete", "server_volume_create", "server_volume_resize", "server_volume_delete", "file_unzip", "file_zip", "file_upload", "file_upload_finish", "file_download_begin":
 		return 30 * time.Minute
 	case "server_action":
 		if payload["action"] == "deploy" {
@@ -456,7 +523,32 @@ func (a *Agent) copyFile(ctx context.Context, id, dst string, data []byte) error
 	if err := tw.Close(); err != nil {
 		return err
 	}
-	return a.docker.CopyToContainer(ctx, id, parent, &b, container.CopyToContainerOptions{AllowOverwriteDirWithFile: true})
+	return a.docker.CopyToContainer(ctx, id, parent, &b, container.CopyToContainerOptions{
+		AllowOverwriteDirWithFile: true,
+		CopyUIDGID:                true,
+	})
+}
+
+// copyFileFromReader streams a tar archive into Docker without buffering the file in memory.
+func (a *Agent) copyFileFromReader(ctx context.Context, id, dst string, source io.Reader, size int64) error {
+	reader, writer := io.Pipe()
+	go func() {
+		tarWriter := tar.NewWriter(writer)
+		err := tarWriter.WriteHeader(&tar.Header{Name: filepath.Base(dst), Mode: 0644, Size: size, ModTime: time.Now()})
+		if err == nil {
+			_, err = io.CopyN(tarWriter, source, size)
+		}
+		if closeErr := tarWriter.Close(); err == nil {
+			err = closeErr
+		}
+		_ = writer.CloseWithError(err)
+	}()
+	err := a.docker.CopyToContainer(ctx, id, path.Dir(dst), reader, container.CopyToContainerOptions{
+		AllowOverwriteDirWithFile: true,
+		CopyUIDGID:                true,
+	})
+	_ = reader.Close()
+	return err
 }
 
 type backupMount struct {
@@ -539,7 +631,10 @@ func (a *Agent) restoreMountedVolumes(ctx context.Context, containerID, serverID
 		if err != nil {
 			return err
 		}
-		err = a.docker.CopyToContainer(ctx, containerID, mount.Destination, file, container.CopyToContainerOptions{AllowOverwriteDirWithFile: true})
+		err = a.docker.CopyToContainer(ctx, containerID, mount.Destination, file, container.CopyToContainerOptions{
+			AllowOverwriteDirWithFile: true,
+			CopyUIDGID:                true,
+		})
 		_ = file.Close()
 		if err != nil {
 			return fmt.Errorf("restore mounted path %s: %w", mount.Destination, err)

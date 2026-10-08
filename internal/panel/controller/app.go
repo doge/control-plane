@@ -28,16 +28,26 @@ type Config struct {
 	SessionTTL                         time.Duration
 }
 type App struct {
-	db            *mongo.Database
-	client        *mongo.Client
-	service       *service.Service
-	cfg           Config
-	nodesMu       sync.RWMutex
-	nodeSessions  map[bson.ObjectID]*nodeSession
-	userLocks     sync.Map
-	rateLimitMu   sync.Mutex
-	rateLimits    map[string]rateLimitWindow
-	httpsRequired atomic.Bool
+	db              *mongo.Database
+	client          *mongo.Client
+	service         *service.Service
+	cfg             Config
+	nodesMu         sync.RWMutex
+	nodeSessions    map[bson.ObjectID]*nodeSession
+	nodeCreateLocks sync.Map
+	nodeNamesMu     sync.Mutex
+	userLocks       sync.Map
+	rateLimitMu     sync.Mutex
+	rateLimits      map[string]rateLimitWindow
+	httpsRequired   atomic.Bool
+}
+
+// lockNodeCreate serializes resource checks and server reservations per node.
+func (a *App) lockNodeCreate(nodeID bson.ObjectID) func() {
+	value, _ := a.nodeCreateLocks.LoadOrStore(nodeID, &sync.Mutex{})
+	lock := value.(*sync.Mutex)
+	lock.Lock()
+	return lock.Unlock
 }
 
 func New(ctx context.Context, cfg Config) (*App, error) {
@@ -94,7 +104,19 @@ func (a *App) ensureIndexes(ctx context.Context) error {
 	}
 	_, _ = a.db.Collection("roles").Indexes().CreateOne(ctx, mongo.IndexModel{Keys: bson.D{{Key: "name", Value: 1}}, Options: options.Index().SetUnique(true)})
 	_, _ = a.db.Collection("configs").Indexes().CreateOne(ctx, mongo.IndexModel{Keys: bson.D{{Key: "slug", Value: 1}}, Options: options.Index().SetUnique(true)})
-	_, err = a.db.Collection("servers").Indexes().CreateOne(ctx, mongo.IndexModel{Keys: bson.D{{Key: "nameKey", Value: 1}}, Options: options.Index().SetUnique(true).SetPartialFilterExpression(bson.M{"nameKey": bson.M{"$type": "string"}})})
+	_, err = a.db.Collection("servers").Indexes().CreateMany(ctx, []mongo.IndexModel{
+		{Keys: bson.D{{Key: "nameKey", Value: 1}}, Options: options.Index().SetUnique(true).SetPartialFilterExpression(bson.M{"nameKey": bson.M{"$type": "string"}})},
+		{Keys: bson.D{{Key: "nodeId", Value: 1}}},
+	})
+	if err != nil {
+		return err
+	}
+	_, err = a.db.Collection("nodes").Indexes().CreateOne(ctx, mongo.IndexModel{
+		Keys: bson.D{{Key: "nameKey", Value: 1}},
+		Options: options.Index().SetUnique(true).SetPartialFilterExpression(
+			bson.M{"nameKey": bson.M{"$type": "string"}},
+		),
+	})
 	return err
 }
 func hashPassword(p string) (string, error) {

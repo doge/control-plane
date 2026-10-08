@@ -1,5 +1,5 @@
 import { createPortal } from "react-dom";
-import { Move } from "lucide-react";
+import { Archive, Download, Move } from "lucide-react";
 
 /** Show the file actions at the cursor position that opened the menu. */
 export function FileContextMenu({
@@ -7,11 +7,19 @@ export function FileContextMenu({
   y,
   onClose,
   onMove,
+  onZip,
+  onDownload,
+  isFolder,
+  canManage,
 }: {
   x: number;
   y: number;
   onClose: () => void;
   onMove: () => void;
+  onZip: () => void;
+  onDownload: () => void;
+  isFolder: boolean;
+  canManage: boolean;
 }) {
   return createPortal(
     <div
@@ -28,10 +36,24 @@ export function FileContextMenu({
         style={{ left: x, top: y }}
         onClick={(event) => event.stopPropagation()}
       >
-        <button role="menuitem" onClick={onMove}>
-          <Move size={14} />
-          Move to folder…
-        </button>
+        {isFolder && canManage && (
+          <button role="menuitem" onClick={onZip}>
+            <Archive size={14} />
+            Create ZIP
+          </button>
+        )}
+        {!isFolder && (
+          <button role="menuitem" onClick={onDownload}>
+            <Download size={14} />
+            Download
+          </button>
+        )}
+        {canManage && (
+          <button role="menuitem" onClick={onMove}>
+            <Move size={14} />
+            Move to folder…
+          </button>
+        )}
       </div>
     </div>,
     document.body,

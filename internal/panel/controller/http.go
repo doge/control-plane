@@ -36,6 +36,7 @@ func (a *App) Handler() http.Handler {
 	mux.Handle("/api/configs", a.auth(http.HandlerFunc(controller.configs)))
 	mux.Handle("/api/configs/", a.auth(http.HandlerFunc(controller.configByID)))
 	mux.Handle("/api/nodes", a.auth(http.HandlerFunc(controller.nodes)))
+	mux.Handle("/api/nodes/region", a.auth(a.rateLimit("node-region", 10, 15*time.Minute)(http.HandlerFunc(controller.nodeRegion)), "nodes.manage"))
 	mux.Handle("/api/nodes/", a.auth(http.HandlerFunc(controller.nodeByID)))
 	mux.Handle("/api/servers", a.auth(http.HandlerFunc(controller.servers)))
 	mux.Handle("/api/servers/", a.auth(http.HandlerFunc(controller.serverOps)))

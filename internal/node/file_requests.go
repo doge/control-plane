@@ -10,6 +10,8 @@ import (
 	"net/url"
 	"os"
 	"path"
+	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -20,6 +22,12 @@ func (a *Agent) handleFileRequest(ctx context.Context, m Message, payload map[st
 	if m.ContainerID == "" {
 		return nil, fmt.Errorf("server has no container id; deploy it first")
 	}
+	if m.Type == "file_upload_chunk" {
+		return appendUploadChunk(payload)
+	}
+	if m.Type == "file_upload_abort" {
+		return nil, removeUploadTemp(payload["uploadId"])
+	}
 	root := textValue(payload["root"])
 	if root == "" {
 		root = "/data"
@@ -29,6 +37,10 @@ func (a *Agent) handleFileRequest(ctx context.Context, m Message, payload map[st
 		return nil, err
 	}
 	switch m.Type {
+	case "file_upload_begin":
+		return beginUploadTemp(payload)
+	case "file_upload_finish":
+		return a.finishUploadTemp(ctx, m.ContainerID, filePath, payload)
 	case "file_list":
 		archive, stat, err := a.docker.CopyFromContainer(ctx, m.ContainerID, filePath)
 		if err != nil {
@@ -176,6 +188,17 @@ func (a *Agent) handleFileRequest(ctx context.Context, m Message, payload map[st
 			return nil, err
 		}
 		return map[string]any{"ok": true, "path": destination}, nil
+	case "file_zip":
+		if err := a.zipDirectory(ctx, m.ContainerID, filePath, root); err != nil {
+			return nil, err
+		}
+		return map[string]any{"ok": true, "path": path.Join(path.Dir(filePath), path.Base(filePath)+".zip")}, nil
+	case "file_download_begin":
+		return a.beginFileDownload(ctx, m.ContainerID, filePath, payload)
+	case "file_download_chunk":
+		return readFileDownloadChunk(payload)
+	case "file_download_finish":
+		return nil, removeFileDownload(payload["downloadId"])
 	case "file_upload_url":
 		raw := textValue(payload["url"])
 		u, err := url.Parse(raw)
@@ -190,6 +213,302 @@ func (a *Agent) handleFileRequest(ctx context.Context, m Message, payload map[st
 	default:
 		return nil, fmt.Errorf("unsupported file operation")
 	}
+}
+
+// zipDirectory streams a Docker directory archive into a ZIP file beside the source folder.
+func (a *Agent) zipDirectory(ctx context.Context, containerID, directory, root string) error {
+	archivePath := path.Join(path.Dir(directory), path.Base(directory)+".zip")
+	if _, err := SafePathAt(archivePath, root); err != nil {
+		return err
+	}
+	if existing, _, err := a.docker.CopyFromContainer(ctx, containerID, archivePath); err == nil {
+		_ = existing.Close()
+		return fmt.Errorf("%s already exists", path.Base(archivePath))
+	}
+	archive, stat, err := a.docker.CopyFromContainer(ctx, containerID, directory)
+	if err != nil {
+		return err
+	}
+	defer archive.Close()
+	if !stat.Mode.IsDir() {
+		return fmt.Errorf("selected path is not a folder")
+	}
+	tmp, err := os.CreateTemp("", "control-plane-folder-*.zip")
+	if err != nil {
+		return err
+	}
+	tmpPath := tmp.Name()
+	defer func() { _ = tmp.Close(); _ = os.Remove(tmpPath) }()
+	writer := zip.NewWriter(tmp)
+	tarReader := tar.NewReader(archive)
+	target := strings.TrimPrefix(directory, "/")
+	folderName := path.Base(directory)
+	for {
+		header, readErr := tarReader.Next()
+		if readErr == io.EOF {
+			break
+		}
+		if readErr != nil {
+			return readErr
+		}
+		name := strings.TrimSuffix(strings.TrimPrefix(strings.TrimPrefix(header.Name, "./"), "/"), "/")
+		if name == target || name == folderName {
+			name = ""
+		} else if strings.HasPrefix(name, target+"/") {
+			name = strings.TrimPrefix(name, target+"/")
+		} else if strings.HasPrefix(name, folderName+"/") {
+			name = strings.TrimPrefix(name, folderName+"/")
+		} else {
+			continue
+		}
+		mode := header.FileInfo().Mode()
+		if mode&os.ModeSymlink != 0 || (!mode.IsDir() && !mode.IsRegular()) {
+			return fmt.Errorf("folder contains an unsupported special file")
+		}
+		zipName := folderName
+		if name != "" {
+			zipName = path.Join(folderName, path.Clean(name))
+		}
+		if mode.IsDir() {
+			zipName += "/"
+		}
+		zipHeader := &zip.FileHeader{Name: zipName, Method: zip.Deflate}
+		zipHeader.SetMode(mode)
+		zipHeader.Modified = header.ModTime
+		entry, createErr := writer.CreateHeader(zipHeader)
+		if createErr != nil {
+			return createErr
+		}
+		if !mode.IsDir() {
+			if _, err := io.CopyN(entry, tarReader, header.Size); err != nil {
+				return err
+			}
+		}
+	}
+	if err := writer.Close(); err != nil {
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	file, err := os.Open(tmpPath)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+	info, err := file.Stat()
+	if err != nil {
+		return err
+	}
+	if err := a.copyFileFromReader(ctx, containerID, archivePath, file, info.Size()); err != nil {
+		return fmt.Errorf("save ZIP file: %w", err)
+	}
+	return nil
+}
+
+// beginFileDownload stages a file outside the container for bounded chunk reads.
+func (a *Agent) beginFileDownload(ctx context.Context, containerID, filePath string, payload map[string]any) (map[string]any, error) {
+	id := textValue(payload["downloadId"])
+	tempPath, err := fileDownloadTempPath(id)
+	if err != nil {
+		return nil, err
+	}
+	archive, stat, err := a.docker.CopyFromContainer(ctx, containerID, filePath)
+	if err != nil {
+		return nil, err
+	}
+	defer archive.Close()
+	if stat.Mode.IsDir() {
+		return nil, fmt.Errorf("selected path is a folder")
+	}
+	temp, err := os.OpenFile(tempPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
+	if err != nil {
+		return nil, fmt.Errorf("prepare download: %w", err)
+	}
+	tr := tar.NewReader(archive)
+	var size int64
+	for {
+		header, nextErr := tr.Next()
+		if nextErr == io.EOF {
+			break
+		}
+		if nextErr != nil {
+			_ = temp.Close()
+			_ = os.Remove(tempPath)
+			return nil, nextErr
+		}
+		if header.FileInfo().IsDir() || path.Base(header.Name) != path.Base(filePath) {
+			continue
+		}
+		size, err = io.Copy(temp, io.LimitReader(tr, header.Size))
+		if err != nil {
+			_ = temp.Close()
+			_ = os.Remove(tempPath)
+			return nil, err
+		}
+		break
+	}
+	if err := temp.Close(); err != nil {
+		_ = os.Remove(tempPath)
+		return nil, err
+	}
+	if size == 0 && stat.Size > 0 {
+		_ = os.Remove(tempPath)
+		return nil, fmt.Errorf("file data was missing from the Docker archive")
+	}
+	return map[string]any{"downloadId": id, "size": size, "name": path.Base(filePath)}, nil
+}
+
+func fileDownloadTempPath(id string) (string, error) {
+	if len(id) != 32 {
+		return "", fmt.Errorf("invalid download id")
+	}
+	for _, char := range id {
+		if (char < '0' || char > '9') && (char < 'a' || char > 'f') {
+			return "", fmt.Errorf("invalid download id")
+		}
+	}
+	return filepath.Join(os.TempDir(), "control-plane-download-"+id+".part"), nil
+}
+
+func readFileDownloadChunk(payload map[string]any) (map[string]any, error) {
+	tempPath, err := fileDownloadTempPath(textValue(payload["downloadId"]))
+	if err != nil {
+		return nil, err
+	}
+	offset, err := strconv.ParseInt(textValue(payload["offset"]), 10, 64)
+	if err != nil || offset < 0 {
+		return nil, fmt.Errorf("invalid download offset")
+	}
+	limit := int64(number(payload["limit"], 1<<20))
+	if limit < 1 || limit > 2<<20 {
+		return nil, fmt.Errorf("invalid download chunk size")
+	}
+	file, err := os.Open(tempPath)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+	data := make([]byte, limit)
+	n, err := file.ReadAt(data, offset)
+	if err != nil && err != io.EOF {
+		return nil, err
+	}
+	return map[string]any{"data": base64.StdEncoding.EncodeToString(data[:n]), "bytes": n}, nil
+}
+
+func removeFileDownload(raw any) error {
+	tempPath, err := fileDownloadTempPath(textValue(raw))
+	if err != nil {
+		return err
+	}
+	if err := os.Remove(tempPath); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	return nil
+}
+
+func uploadTempPath(raw any) (string, error) {
+	id := textValue(raw)
+	if len(id) != 32 {
+		return "", fmt.Errorf("invalid upload id")
+	}
+	for _, char := range id {
+		if (char < '0' || char > '9') && (char < 'a' || char > 'f') {
+			return "", fmt.Errorf("invalid upload id")
+		}
+	}
+	return filepath.Join(os.TempDir(), "control-plane-upload-"+id+".part"), nil
+}
+
+func beginUploadTemp(payload map[string]any) (map[string]any, error) {
+	tempPath, err := uploadTempPath(payload["uploadId"])
+	if err != nil {
+		return nil, err
+	}
+	file, err := os.OpenFile(tempPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
+	if err != nil {
+		return nil, fmt.Errorf("start upload: %w", err)
+	}
+	if err := file.Close(); err != nil {
+		_ = os.Remove(tempPath)
+		return nil, err
+	}
+	return map[string]any{"ok": true}, nil
+}
+
+func appendUploadChunk(payload map[string]any) (map[string]any, error) {
+	tempPath, err := uploadTempPath(payload["uploadId"])
+	if err != nil {
+		return nil, err
+	}
+	encoded, _ := payload["data"].(string)
+	data, err := base64.StdEncoding.DecodeString(encoded)
+	if err != nil || len(data) == 0 || len(data) > 4<<20 {
+		return nil, fmt.Errorf("invalid upload chunk")
+	}
+	offset, err := strconv.ParseInt(textValue(payload["offset"]), 10, 64)
+	if err != nil || offset < 0 {
+		return nil, fmt.Errorf("invalid upload offset")
+	}
+	file, err := os.OpenFile(tempPath, os.O_WRONLY, 0600)
+	if err != nil {
+		return nil, fmt.Errorf("write upload chunk: %w", err)
+	}
+	defer file.Close()
+	stat, err := file.Stat()
+	if err != nil {
+		return nil, err
+	}
+	if stat.Size() != offset {
+		return nil, fmt.Errorf("unexpected upload offset")
+	}
+	written, err := file.Write(data)
+	if err != nil {
+		return nil, err
+	}
+	if written != len(data) {
+		return nil, io.ErrShortWrite
+	}
+	return map[string]any{"ok": true, "bytes": written}, nil
+}
+
+func (a *Agent) finishUploadTemp(ctx context.Context, containerID, destination string, payload map[string]any) (map[string]any, error) {
+	tempPath, err := uploadTempPath(payload["uploadId"])
+	if err != nil {
+		return nil, err
+	}
+	file, err := os.Open(tempPath)
+	if err != nil {
+		return nil, fmt.Errorf("finish upload: %w", err)
+	}
+	defer file.Close()
+	stat, err := file.Stat()
+	if err != nil {
+		return nil, err
+	}
+	expected, err := strconv.ParseInt(textValue(payload["size"]), 10, 64)
+	if err != nil || expected != stat.Size() {
+		return nil, fmt.Errorf("uploaded file size does not match")
+	}
+	if err := a.copyFileFromReader(ctx, containerID, destination, file, stat.Size()); err != nil {
+		return nil, err
+	}
+	if err := os.Remove(tempPath); err != nil {
+		return nil, err
+	}
+	return map[string]any{"ok": true, "bytes": stat.Size()}, nil
+}
+
+func removeUploadTemp(raw any) error {
+	tempPath, err := uploadTempPath(raw)
+	if err != nil {
+		return err
+	}
+	if err := os.Remove(tempPath); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	return nil
 }
 
 func (a *Agent) extractZip(ctx context.Context, containerID, archivePath, destination, root string) (resultErr error) {
@@ -369,7 +688,10 @@ func (a *Agent) copyFileReader(ctx context.Context, containerID, destination str
 		_ = writer.CloseWithError(err)
 		writerDone <- err
 	}()
-	copyErr := a.docker.CopyToContainer(ctx, containerID, path.Dir(destination), reader, container.CopyToContainerOptions{AllowOverwriteDirWithFile: true})
+	copyErr := a.docker.CopyToContainer(ctx, containerID, path.Dir(destination), reader, container.CopyToContainerOptions{
+		AllowOverwriteDirWithFile: true,
+		CopyUIDGID:                true,
+	})
 	if copyErr != nil {
 		_ = reader.CloseWithError(copyErr)
 	}

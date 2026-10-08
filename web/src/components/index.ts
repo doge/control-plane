@@ -13,3 +13,5 @@ export { Modal } from "./Modal";
 export { FormActions } from "./FormActions";
 export { Button, ButtonLink } from "./Button";
 export { Spinner } from "./Spinner";
+export { ResourceSlider } from "./ResourceSlider";
+export { InlineRename } from "./InlineRename";

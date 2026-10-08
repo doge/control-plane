@@ -21,6 +21,7 @@ import {
   type NodeItem,
   type NodeResources,
   type Config,
+  isLoopbackIP,
 } from "../../shared/domain";
 
 import {
@@ -29,6 +30,7 @@ import {
   Entity,
   Field,
   formatBytes,
+  InlineRename,
   Modal,
   PageHeading,
   PanelHeading,
@@ -186,6 +188,7 @@ export function NodeDetail({
   onOpenResources,
   onBack,
   onDeleted,
+  onChanged,
   canManage = false,
 }: {
   node: NodeItem;
@@ -195,6 +198,7 @@ export function NodeDetail({
   onOpenResources: () => void;
   onBack: () => void;
   onDeleted: () => void;
+  onChanged: () => void;
   canManage?: boolean;
 }) {
   const confirmAction = useConfirmation();
@@ -205,6 +209,7 @@ export function NodeDetail({
     node.portAllocations || [],
   );
   const [nodeIPs, setNodeIPs] = useState(node.ips || []);
+  const [nodeIPsText, setNodeIPsText] = useState((node.ips || []).join(", "));
   const [portIP, setPortIP] = useState(node.ips?.[0] || node.address || "");
   const [singlePort, setSinglePort] = useState("25565");
   const [portError, setPortError] = useState("");
@@ -234,8 +239,14 @@ export function NodeDetail({
     setAddress(node.address || "");
     setPorts(node.portAllocations || []);
     setNodeIPs(node.ips || []);
+    setNodeIPsText((node.ips || []).join(", "));
     setPortIP(node.ips?.[0] || node.address || "");
   }, [node.id, node.address, portsFingerprint, ipFingerprint]);
+  useEffect(() => {
+    const available = liveStats?.bindIPs || [];
+    const preferred = available.find((ip) => !isLoopbackIP(ip)) || available[0];
+    if (preferred) setPortIP(preferred);
+  }, [liveStats?.bindIPs?.join(",")]);
   useEffect(() => {
     const s = liveStats;
     if (!s?.updatedAt) return;
@@ -261,18 +272,19 @@ export function NodeDetail({
         method: "PUT",
         body: JSON.stringify({
           address,
-          ips: [],
+          ips: nodeIPs,
           portAllocations: ports.map((p) => ({ ...p, port: Number(p.port) })),
         }),
       });
       setAddress(updated.address || address);
       setNodeIPs(updated.ips || []);
+      setNodeIPsText((updated.ips || []).join(", "));
       setPorts(updated.portAllocations || []);
       setPortIP(updated.ips?.[0] || updated.address || "");
       showToast(
         node.status === "online"
-          ? "DNS addresses, port allocations, and UFW rules saved."
-          : "DNS addresses and port allocations saved. UFW rules will be added when the node is online and a server uses an allocation.",
+          ? "Connection address, Docker bind IPs, port allocations, and UFW rules saved."
+          : "Connection address and port allocations saved. UFW rules will be added when the node is online and a server uses an allocation.",
         "success",
       );
     } catch (e: unknown) {
@@ -303,6 +315,33 @@ export function NodeDetail({
     }
   };
   const ips = nodeIPs.length ? nodeIPs : [address].filter(Boolean);
+  const allDetectedBindIPs = liveStats?.bindIPs || [];
+  const routedBindIPs = allDetectedBindIPs.filter((ip) => !isLoopbackIP(ip));
+  const detectedBindIPs = routedBindIPs.length ? routedBindIPs : allDetectedBindIPs;
+  const bindIPOptions = detectedBindIPs.length ? detectedBindIPs : ips;
+  const addDetectedBindIP = (ip: string) => {
+    if (nodeIPs.includes(ip)) return;
+    setNodeIPs((current) => [...current, ip]);
+    setNodeIPsText((current) => {
+      const values = current
+        .split(",")
+        .map((value) => value.trim())
+        .filter(Boolean);
+      return [...new Set([...values, ip])].join(", ");
+    });
+    const existingPorts = [...new Set(ports.map((allocation) => allocation.port))];
+    setPorts((current) => [
+      ...current,
+      ...existingPorts
+        .filter(
+          (port) =>
+            !current.some(
+              (allocation) => allocation.ip === ip && allocation.port === port,
+            ),
+        )
+        .map((port) => ({ ip, port })),
+    ]);
+  };
   const addPort = () => {
     const port = Number(singlePort);
     if (!Number.isInteger(port) || port < 1 || port > 65535) {
@@ -312,6 +351,12 @@ export function NodeDetail({
     if (ports.some((entry) => entry.ip === portIP && entry.port === port)) {
       setPortError(`Port ${port} is already allocated for this IP.`);
       return;
+    }
+    if (!nodeIPs.includes(portIP)) {
+      setNodeIPs((current) => [...current, portIP]);
+      setNodeIPsText((current) =>
+        [...new Set([...current.split(",").map((ip) => ip.trim()).filter(Boolean), portIP])].join(", "),
+      );
     }
     setPorts((old) => [...old, { ip: portIP, port }]);
     setPortError("");
@@ -343,7 +388,23 @@ export function NodeDetail({
       </button>
       <PageHeading
         eyebrow="NODE DETAILS"
-        title={node.name}
+        title={
+          <InlineRename
+            value={node.name}
+            label="Node"
+            editable={canManage}
+            maxLength={64}
+            pattern="[A-Za-z0-9][A-Za-z0-9._ -]{0,63}"
+            onSave={async (name) => {
+              const renamed = await api<NodeItem>(
+                `/api/nodes/${node.id}/name`,
+                { method: "PUT", body: JSON.stringify({ name }) },
+              );
+              onChanged();
+              return renamed.name;
+            }}
+          />
+        }
         description={`${node.address || "Address not set"} · ${
           node.region || "Region not set"
         }`}
@@ -458,17 +519,58 @@ export function NodeDetail({
             sub="Add individual ports available to servers."
           />
           <div className="node-config-fields">
-            <Field label="Node hostname or IP">
+            <Field label="Public connection hostname or IP">
               <input
                 required
                 value={address}
                 onChange={(e) => setAddress(e.target.value)}
               />
               <small className="field-hint">
-                DNS addresses are resolved below. Each saved port becomes
-                available in the server configuration dropdown.
+                Players use this address to connect. Docker binds to one of the
+                local interface IPs listed below.
               </small>
             </Field>
+            <Field label="Docker bind IPs">
+              <input
+                value={nodeIPsText}
+                onChange={(event) => {
+                  const text = event.target.value;
+                  setNodeIPsText(text);
+                  setNodeIPs(
+                    text
+                      .split(",")
+                      .map((ip) => ip.trim())
+                      .filter(Boolean),
+                  );
+                }}
+                placeholder="10.0.0.230"
+              />
+              <small className="field-hint">
+                These addresses must be assigned to the node itself. On cloud
+                hosts with a private interface, use its private IP here.
+                Separate multiple IPs with commas.
+              </small>
+            </Field>
+            {detectedBindIPs.length > 0 && (
+              <div className="detected-bind-ips">
+                <div className="subsection-label">DETECTED LOCAL INTERFACES</div>
+                <div className="server-actions">
+                  {detectedBindIPs.map((ip) => (
+                    <Button
+                      key={ip}
+                      variant="subtle"
+                      size="tiny"
+                      type="button"
+                      disabled={nodeIPs.includes(ip)}
+                      onClick={() => addDetectedBindIP(ip)}
+                    >
+                      <Plus size={12} />
+                      {nodeIPs.includes(ip) ? `${ip} added` : `Add ${ip}`}
+                    </Button>
+                  ))}
+                </div>
+              </div>
+            )}
             <div className="ip-pool-list">
               <div className="allocation-heading">
                 <div>
@@ -493,7 +595,7 @@ export function NodeDetail({
                         setPortError("");
                       }}
                     >
-                      {ips.map((ip) => (
+                      {bindIPOptions.map((ip) => (
                         <option key={ip} value={ip}>
                           {ip}
                         </option>

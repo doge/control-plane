@@ -11,6 +11,12 @@ export type User = {
   >[];
   totpEnabled?: boolean;
 };
+
+/** Identify IPv4 and IPv6 loopback addresses in node telemetry. */
+export function isLoopbackIP(address: string): boolean {
+  return address === "::1" || address.startsWith("127.");
+}
+
 export type Role = {
   id: string;
   name: string;
@@ -33,9 +39,15 @@ export type NodeItem = {
   portAllocations?: { ip: string; port: number }[];
   status: string;
   lastSeen?: string;
+  resourceUsage?: {
+    cpuCores: number;
+    memoryMB: number;
+    storageBytes: number;
+  };
   stats?: {
     cpuThreads: number;
     architecture: string;
+    bindIPs?: string[];
     kernel: string;
     cpuPercent: number;
     memoryUsedBytes: number;

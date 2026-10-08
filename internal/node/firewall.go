@@ -42,7 +42,11 @@ func OpenNodePortAllocations(ctx context.Context, payload map[string]any) (map[s
 		}
 		ports = append(ports, int(port))
 	}
-	rules := portRangeRules(ports)
+	ranges := portRangeRules(ports)
+	rules := make([]string, 0, len(ranges)*2)
+	for _, portRange := range ranges {
+		rules = append(rules, portRange+"/tcp", portRange+"/udp")
+	}
 	if err := addUFWRules(ctx, rules); err != nil {
 		return nil, err
 	}

@@ -14,6 +14,7 @@ import (
 	"github.com/example/control-plane/internal/config"
 	"github.com/example/control-plane/internal/models"
 	"github.com/example/control-plane/internal/panel/service"
+	"github.com/example/control-plane/internal/resources"
 	"go.mongodb.org/mongo-driver/v2/bson"
 )
 
@@ -86,19 +87,6 @@ func (c *Controller) hydrateNodeNetwork(ctx context.Context, node *models.Node) 
 	_, _ = c.service.Nodes.UpdateOne(ctx, bson.M{"_id": node.ID}, bson.M{"$set": bson.M{"ips": ips}})
 }
 
-func mergeIPs(groups ...[]string) []string {
-	out := []string{}
-	seen := map[string]bool{}
-	for _, group := range groups {
-		for _, ip := range group {
-			if !seen[ip] {
-				seen[ip] = true
-				out = append(out, ip)
-			}
-		}
-	}
-	return out
-}
 func validateIPAddresses(values []string) ([]string, error) {
 	result := make([]string, 0, len(values))
 	seen := map[string]bool{}
@@ -122,7 +110,7 @@ func validateIPAddresses(values []string) ([]string, error) {
 	}
 	return result, nil
 }
-func (c *Controller) allocatePorts(ctx context.Context, node models.Node, value models.Config) ([]models.PortAllocation, string, error) {
+func (c *Controller) allocatePorts(ctx context.Context, node models.Node, value models.Config, selected *[]models.PortAllocation) ([]models.PortAllocation, string, error) {
 	ports := value.Spec.Ports
 	ips := node.IPs
 	if len(ips) == 0 {
@@ -136,7 +124,18 @@ func (c *Controller) allocatePorts(ctx context.Context, node models.Node, value 
 	if len(available) == 0 && len(ports) > 0 {
 		return nil, "", fmt.Errorf("add specific IP and port allocations to this node before creating servers")
 	}
+	if selected != nil && len(*selected) != len(ports) {
+		return nil, "", fmt.Errorf("choose one node IP and host port for each Config port")
+	}
 	used := map[string]bool{}
+	localBindIPs := make(map[string]bool, len(node.Stats.BindIPs))
+	hasReportedBindIPs := len(node.Stats.BindIPs) > 0
+	for _, ip := range node.Stats.BindIPs {
+		parsed := net.ParseIP(ip)
+		if parsed != nil && !parsed.IsLoopback() {
+			localBindIPs[parsed.String()] = true
+		}
+	}
 	var existing []models.Server
 	if err := c.service.Servers.FindAll(ctx, bson.M{"nodeId": node.ID}, &existing); err != nil {
 		return nil, "", err
@@ -150,13 +149,41 @@ func (c *Controller) allocatePorts(ctx context.Context, node models.Node, value 
 		}
 	}
 	allocations := make([]models.PortAllocation, 0, len(ports))
-	for _, spec := range ports {
+	for index, spec := range ports {
 		containerPort := spec.Container
 		protocol := strings.ToLower(strings.TrimSpace(spec.Protocol))
 		if protocol == "" {
 			protocol = "tcp"
 		}
 		name := spec.Name
+		if selected != nil {
+			choice := (*selected)[index]
+			parsedIP := net.ParseIP(choice.IP)
+			if parsedIP == nil || parsedIP.IsLoopback() {
+				return nil, "", fmt.Errorf("%s is not a usable node bind IP; select a non-loopback interface address", choice.IP)
+			}
+			choice.IP = parsedIP.String()
+			if hasReportedBindIPs && !localBindIPs[choice.IP] {
+				return nil, "", fmt.Errorf("%s is not a local IP on this node; select one of its detected bind IPs", choice.IP)
+			}
+			allowed := false
+			for _, entry := range available {
+				if entry.IP == choice.IP && entry.Port == choice.Host {
+					allowed = true
+					break
+				}
+			}
+			if !allowed {
+				return nil, "", fmt.Errorf("%s:%d is not an allocated port on this node", choice.IP, choice.Host)
+			}
+			key := fmt.Sprintf("%s:%d/*", choice.IP, choice.Host)
+			if used[key] {
+				return nil, "", fmt.Errorf("%s:%d is already allocated to another server or Config port", choice.IP, choice.Host)
+			}
+			allocations = append(allocations, models.PortAllocation{Name: name, IP: choice.IP, Host: choice.Host, Container: containerPort, Protocol: protocol})
+			used[key] = true
+			continue
+		}
 		allocated := false
 		preferred := 0
 		candidates := append([]models.NodePortAllocation(nil), available...)
@@ -169,9 +196,14 @@ func (c *Controller) allocatePorts(ctx context.Context, node models.Node, value 
 			}
 		}
 		for _, entry := range candidates {
-			if entry.Port < 1 || entry.Port > 65535 || net.ParseIP(entry.IP) == nil {
+			parsedIP := net.ParseIP(entry.IP)
+			if entry.Port < 1 || entry.Port > 65535 || parsedIP == nil || parsedIP.IsLoopback() {
 				continue
 			}
+			if hasReportedBindIPs && !localBindIPs[parsedIP.String()] {
+				continue
+			}
+			entry.IP = parsedIP.String()
 			key := fmt.Sprintf("%s:%d/%s", entry.IP, entry.Port, protocol)
 			if used[key] || used[fmt.Sprintf("%s:%d/*", entry.IP, entry.Port)] {
 				continue
@@ -182,13 +214,17 @@ func (c *Controller) allocatePorts(ctx context.Context, node models.Node, value 
 			break
 		}
 		if !allocated {
+			if hasReportedBindIPs {
+				return nil, "", fmt.Errorf("node has no free ports allocated on its local interfaces; add the node's detected bind IP and port in node settings")
+			}
 			return nil, "", fmt.Errorf("node has no free specifically allocated ports for all Config ports")
 		}
 	}
-	if len(allocations) > 0 {
-		return allocations, allocations[0].IP, nil
+	address := strings.TrimSpace(node.Address)
+	if address == "" && len(ips) > 0 {
+		address = ips[0]
 	}
-	return allocations, ips[0], nil
+	return allocations, address, nil
 }
 func numberValue(v any) float64 {
 	switch n := v.(type) {
@@ -246,13 +282,14 @@ func (c *Controller) servers(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		var in struct {
-			Name          string            `json:"name"`
-			NodeID        bson.ObjectID     `json:"nodeId"`
-			ConfigID      bson.ObjectID     `json:"configId"`
-			CPULimit      float64           `json:"cpuLimit"`
-			MemoryMB      int64             `json:"memoryMB"`
-			DiskSizeBytes int64             `json:"diskSizeBytes"`
-			Variables     map[string]string `json:"variables"`
+			Name          string                   `json:"name"`
+			NodeID        bson.ObjectID            `json:"nodeId"`
+			ConfigID      bson.ObjectID            `json:"configId"`
+			Allocations   *[]models.PortAllocation `json:"allocations"`
+			CPULimit      float64                  `json:"cpuLimit"`
+			MemoryMB      int64                    `json:"memoryMB"`
+			DiskSizeBytes int64                    `json:"diskSizeBytes"`
+			Variables     map[string]string        `json:"variables"`
 		}
 		if bodyJSON(r, &in) != nil || strings.TrimSpace(in.Name) == "" || in.NodeID.IsZero() {
 			writeJSON(w, 400, map[string]string{"error": "name, nodeId and configId required"})
@@ -307,8 +344,19 @@ func (c *Controller) servers(w http.ResponseWriter, r *http.Request) {
 		if in.DiskSizeBytes == 0 {
 			in.DiskSizeBytes = 4 * 1024 * 1024 * 1024
 		}
-		if in.DiskSizeBytes < 128*1024*1024 {
+		if in.DiskSizeBytes < resources.MinimumVolumeBytes {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "server disk size must be at least 128 MB"})
+			return
+		}
+		unlockNode := c.app.lockNodeCreate(in.NodeID)
+		defer unlockNode()
+		usage, err := c.nodeResourceUsage(r.Context(), in.NodeID)
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "could not check node resource reservations"})
+			return
+		}
+		if err := validateServerResources(node, usage, in.CPULimit, in.MemoryMB, in.DiskSizeBytes); err != nil {
+			writeJSON(w, http.StatusConflict, map[string]string{"error": err.Error()})
 			return
 		}
 		resolvedVariables, err := config.DefaultValues(value.Spec, in.Variables)
@@ -316,7 +364,7 @@ func (c *Controller) servers(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, 400, map[string]string{"error": err.Error()})
 			return
 		}
-		allocations, address, err := c.allocatePorts(r.Context(), node, value)
+		allocations, address, err := c.allocatePorts(r.Context(), node, value, in.Allocations)
 		if err != nil {
 			writeJSON(w, 409, map[string]string{"error": err.Error()})
 			return

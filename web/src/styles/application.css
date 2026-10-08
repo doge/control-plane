@@ -169,6 +169,35 @@ textarea {
 .page-heading h1 {
   @apply [margin:7px_0_5px] text-[clamp(26px,_3vw,_34px)] leading-[1.1] tracking-[-0.045em];
 }
+.inline-rename-trigger {
+  @apply p-0 [border:1px_solid_transparent] rounded-[5px] [background:transparent] text-left [font:inherit] leading-[inherit] tracking-[inherit] cursor-text;
+}
+.inline-rename-trigger:hover {
+  text-decoration: underline dotted;
+  text-decoration-color: color-mix(in srgb, var(--accent) 70%, transparent);
+  text-underline-offset: 5px;
+}
+.inline-rename-trigger:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+}
+.inline-rename-edit {
+  @apply inline-flex max-w-full flex-col items-start align-middle;
+}
+.inline-rename-input {
+  @apply w-[min(620px,_80vw)] max-w-full py-[2px] px-[6px] rounded-[7px] bg-surface-raised border-border-strong text-text [font:inherit] leading-[inherit] tracking-[inherit];
+  border: 1px solid var(--border-strong);
+}
+.inline-rename-input:focus {
+  outline: 2px solid color-mix(in srgb, var(--accent) 62%, transparent);
+  outline-offset: 2px;
+}
+.inline-rename-hint {
+  @apply mt-[6px] text-muted text-[11px] leading-[1.4] tracking-normal font-normal;
+}
+.inline-rename-error {
+  color: var(--red);
+}
 .page-heading p {
   @apply m-0 text-muted text-[13px];
 }
@@ -770,6 +799,9 @@ tbody tr:hover {
 .modal-card {
   @apply w-[min(620px,_100%)] max-h-[min(92vh,_900px)] overflow-auto [border:1px_solid_var(--border-strong)] rounded-[14px] bg-surface [box-shadow:var(--shadow)];
 }
+.modal-card-wide {
+  @apply w-[min(920px,_100%)];
+}
 .modal-header {
   @apply sticky top-0 z-[1] py-[17px] px-[20px] flex items-center justify-between bg-surface [border-bottom:1px_solid_var(--border)];
 }
@@ -821,6 +853,53 @@ tbody tr:hover {
 }
 .field-hint {
   @apply text-muted text-[9px] font-normal;
+}
+.resource-slider {
+  @apply min-w-0 p-[12px] [border:1px_solid_var(--border)] rounded-[9px] bg-surface-raised;
+}
+.resource-slider-heading {
+  @apply flex items-center justify-between gap-[12px] text-text-soft text-[10px] font-semibold;
+}
+.resource-slider-heading strong {
+  @apply text-accent text-[11px] [font-variant-numeric:tabular-nums];
+}
+.resource-slider-input {
+  @apply block w-full h-[22px] mt-[10px] mb-[3px] p-0 [appearance:none] bg-transparent cursor-pointer;
+}
+.resource-slider-input::-webkit-slider-runnable-track {
+  @apply h-[7px] rounded-full;
+  background: var(--resource-track);
+}
+.resource-slider-input::-moz-range-track {
+  @apply h-[7px] rounded-full;
+  background: var(--resource-track);
+}
+.resource-slider-input::-webkit-slider-thumb {
+  @apply w-[17px] h-[17px] -mt-[5px] rounded-full [border:3px_solid_var(--surface-raised)] [box-shadow:0_1px_5px_rgba(0,0,0,0.3)] bg-accent [appearance:none];
+}
+.resource-slider-input::-moz-range-thumb {
+  @apply w-[12px] h-[12px] rounded-full [border:3px_solid_var(--surface-raised)] [box-shadow:0_1px_5px_rgba(0,0,0,0.3)] bg-accent;
+}
+.resource-slider-input:focus-visible {
+  @apply outline outline-2 outline-offset-2 outline-accent rounded-full;
+}
+.resource-slider-input:disabled {
+  @apply cursor-not-allowed opacity-55;
+}
+.resource-slider-scale {
+  @apply flex justify-between gap-[8px] text-muted text-[8px] [font-variant-numeric:tabular-nums];
+}
+.resource-slider-availability {
+  @apply mt-[8px] text-muted text-[9px];
+}
+.resource-slider.is-unavailable .resource-slider-availability {
+  @apply text-orange;
+}
+.resource-slider-grid {
+  @apply grid grid-cols-[repeat(3,_minmax(0,_1fr))] gap-[10px];
+}
+.resource-slider-note {
+  @apply text-muted text-[9px] leading-[1.5];
 }
 .form-two {
   @apply grid grid-cols-[repeat(2,_minmax(0,_1fr))] gap-[12px];
@@ -1223,6 +1302,9 @@ button.file-breadcrumb:hover:not(:disabled) {
   }
 }
 @media (max-width: 760px) {
+  .resource-slider-grid {
+    @apply grid-cols-[1fr];
+  }
   .role-permission-groups {
     @apply grid-cols-[1fr];
   }

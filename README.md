@@ -94,7 +94,7 @@ The panel environment supports `PANEL_ADDR`, `MONGO_URI`, `MONGO_DB`, `SESSION_T
 Install one agent on each Linux Docker host. Create the node in **Nodes** first, then use its one-time token:
 
 ```bash
-sudo ./dist/install-node.sh ./dist/control-plane-linux-amd64.tar.gz https://panel.example.com NODE_TOKEN node-name
+sudo ./dist/install-node.sh ./dist/control-plane-linux-amd64.tar.gz https://panel.example.com NODE_TOKEN
 ```
 
 Use the arm64 bundle for an arm64 host. The node installer installs Docker Engine and creates the `control-plane-node` systemd service. The agent runs as root to access Docker and manage containers. Keep its token private and do not expose Docker's TCP API.
@@ -104,7 +104,7 @@ sudo systemctl status control-plane-node
 sudo journalctl -u control-plane-node -f
 ```
 
-The node service reads `/etc/control-plane/node.env`, including `PANEL_URL`, `NODE_TOKEN`, and `NODE_NAME`. Node-to-panel WebSocket connections should use the TLS-enabled panel URL in production.
+The node service reads `/etc/control-plane/node.env`, including `PANEL_URL` and `NODE_TOKEN`. The panel associates the agent with its registered node using that token, so the node name is managed in the panel and is not part of installation. Node-to-panel WebSocket connections should use the TLS-enabled panel URL in production.
 
 ## HTTPS
 

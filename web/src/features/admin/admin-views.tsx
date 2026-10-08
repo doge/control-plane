@@ -1,5 +1,5 @@
 import { Button } from "../../components/Button";
-import { FormEvent, useState } from "react";
+import { FormEvent, useEffect, useState } from "react";
 import { Check, Clipboard, Plus, Settings, Trash } from "lucide-react";
 
 import {
@@ -361,10 +361,40 @@ export function NodeForm({
   const [name, setName] = useState("");
   const [region, setRegion] = useState("");
   const [address, setAddress] = useState("");
+  const [bindIPs, setBindIPs] = useState("");
   const [ports, setPorts] = useState(["25565"]);
+  const [regionDetection, setRegionDetection] = useState<
+    "idle" | "loading" | "detected" | "unavailable"
+  >("idle");
   const [panelURL, setPanelURL] = useState(location.origin);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
+  useEffect(() => {
+    setRegion("");
+    setRegionDetection("idle");
+    if (!address.trim()) {
+      return;
+    }
+    let active = true;
+    const timer = window.setTimeout(async () => {
+      setRegionDetection("loading");
+      try {
+        const result = await api<{ region: string }>(
+          `/api/nodes/region?address=${encodeURIComponent(address.trim())}`,
+        );
+        if (active) {
+          setRegion(result.region);
+          setRegionDetection("detected");
+        }
+      } catch {
+        if (active) setRegionDetection("unavailable");
+      }
+    }, 650);
+    return () => {
+      active = false;
+      window.clearTimeout(timer);
+    };
+  }, [address]);
   const submit = async (e: FormEvent) => {
     e.preventDefault();
     setBusy(true);
@@ -378,6 +408,7 @@ export function NodeForm({
             name,
             region,
             address,
+            ips: bindIPs.split(",").map((ip) => ip.trim()).filter(Boolean),
             ports: ports.map(Number),
           }),
         },
@@ -397,28 +428,24 @@ export function NodeForm({
   return (
     <form className="form-stack modal-body" onSubmit={submit}>
       <p className="modal-intro">
-        Register a Docker host and list the exact ports available for servers on
-        each resolved IP.
+        Register a Docker host, its public game connection address, and the
+        local interface addresses Docker should bind.
       </p>
-      <div className="form-two">
-        <Field label="Node name">
-          <input
-            autoFocus
-            required
-            placeholder="e.g. calgary-01"
-            value={name}
-            onChange={(e) => setName(e.target.value)}
-          />
-        </Field>
-        <Field label="Region">
-          <input
-            placeholder="e.g. Calgary, AB"
-            value={region}
-            onChange={(e) => setRegion(e.target.value)}
-          />
-        </Field>
-      </div>
-      <Field label="Node hostname or IP">
+      <Field label="Node name">
+        <input
+          autoFocus
+          required
+          maxLength={64}
+          pattern="[A-Za-z0-9][A-Za-z0-9._ -]{0,63}"
+          placeholder="e.g. calgary-01"
+          value={name}
+          onChange={(e) => setName(e.target.value)}
+        />
+        <small className="field-hint">
+          Use up to 64 letters, numbers, spaces, dots, underscores, or hyphens.
+        </small>
+      </Field>
+      <Field label="Public connection hostname or IP">
         <input
           required
           placeholder="games.example.net"
@@ -426,7 +453,28 @@ export function NodeForm({
           onChange={(e) => setAddress(e.target.value)}
         />
         <small className="field-hint">
-          The hostname must resolve to at least one valid IPv4 or IPv6 address.
+          Players use this public hostname or IP to connect to game servers.
+        </small>
+        <small className="field-hint" role="status" aria-live="polite">
+          {regionDetection === "loading"
+            ? "Detecting region from the public address…"
+            : regionDetection === "detected"
+              ? `Detected region: ${region}`
+              : regionDetection === "unavailable"
+                ? "Region could not be detected; the node will be saved without one."
+                : "Region will be detected automatically from this address."}
+        </small>
+      </Field>
+      <Field label="Docker bind IPs (optional)">
+        <input
+          placeholder="10.0.0.230"
+          value={bindIPs}
+          onChange={(e) => setBindIPs(e.target.value)}
+        />
+        <small className="field-hint">
+          Enter local interface IPs, separated by commas. On cloud hosts with a
+          private interface, use that private IP here. Leave blank when the
+          public IP is assigned directly to the node.
         </small>
       </Field>
       <div className="node-port-editor">
@@ -434,7 +482,8 @@ export function NodeForm({
           <div>
             <div className="subsection-label">AVAILABLE PORTS</div>
             <small>
-              Each port will be allocated on every IP returned by DNS.
+              Ports are allocated on the configured bind IPs. If none are
+              entered, the resolved public address is used.
             </small>
           </div>
           <Button
@@ -732,8 +781,6 @@ export function NodeTokenCard({
     shellQuote(result.panelURL || location.origin) +
     " NODE_TOKEN=" +
     shellQuote(result.token) +
-    " NODE_NAME=" +
-    shellQuote(result.node.name) +
     " go run ./cmd/node";
   if (!result.token) {
     return (

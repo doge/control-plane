@@ -2,6 +2,7 @@ package controller
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -10,7 +11,9 @@ import (
 	"time"
 
 	"github.com/example/control-plane/internal/models"
+	"github.com/example/control-plane/internal/panel/service"
 	"go.mongodb.org/mongo-driver/v2/bson"
+	"go.mongodb.org/mongo-driver/v2/mongo"
 )
 
 // nodes lists the nodes visible to the caller or enrolls a node.
@@ -23,6 +26,21 @@ func (c *Controller) nodes(w http.ResponseWriter, r *http.Request) {
 		if err := c.service.Nodes.FindAll(r.Context(), bson.D{}, &out); err != nil {
 			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 			return
+		}
+		if len(out) > 0 {
+			nodeIDs := make([]bson.ObjectID, 0, len(out))
+			for _, node := range out {
+				nodeIDs = append(nodeIDs, node.ID)
+			}
+			var servers []models.Server
+			if err := c.service.Servers.FindAll(r.Context(), bson.M{"nodeId": bson.M{"$in": nodeIDs}}, &servers); err != nil {
+				writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "could not load node resource reservations"})
+				return
+			}
+			usage := aggregateResourceUsageByNode(servers)
+			for i := range out {
+				out[i].ResourceUsage = usage[out[i].ID]
+			}
 		}
 		for i := range out {
 			c.hydrateNodeNetwork(r.Context(), &out[i])
@@ -41,8 +59,13 @@ func (c *Controller) nodes(w http.ResponseWriter, r *http.Request) {
 			IPs     []string `json:"ips"`
 			Ports   []int    `json:"ports"`
 		}
-		if bodyJSON(r, &in) != nil || strings.TrimSpace(in.Name) == "" {
-			writeJSON(w, 400, map[string]string{"error": "name required"})
+		if bodyJSON(r, &in) != nil {
+			writeJSON(w, 400, map[string]string{"error": "node name is required"})
+			return
+		}
+		in.Name = strings.TrimSpace(in.Name)
+		if !validNodeName(in.Name) {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "node names must start with a letter or number and use only letters, numbers, spaces, dots, underscores, or hyphens (up to 64 characters)"})
 			return
 		}
 		address, err := resolveHost(in.Address)
@@ -60,7 +83,9 @@ func (c *Controller) nodes(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, 400, map[string]string{"error": err.Error()})
 			return
 		}
-		ips = mergeIPs(ips, extraIPs)
+		if len(extraIPs) > 0 {
+			ips = extraIPs
+		}
 		if len(in.Ports) == 0 {
 			in.Ports = []int{25565}
 		}
@@ -72,6 +97,16 @@ func (c *Controller) nodes(w http.ResponseWriter, r *http.Request) {
 			}
 			portsSeen[port] = true
 		}
+		c.app.nodeNamesMu.Lock()
+		defer c.app.nodeNamesMu.Unlock()
+		var duplicate models.Node
+		if err := c.service.Nodes.FindOne(r.Context(), nodeNameFilter(in.Name, bson.ObjectID{})).Decode(&duplicate); err == nil {
+			writeJSON(w, http.StatusConflict, map[string]string{"error": "A node with this name already exists."})
+			return
+		} else if !errors.Is(err, service.ErrNotFound) {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "Could not check node name availability."})
+			return
+		}
 		raw := randomToken(24)
 		h, _ := hashPassword(raw)
 		allocations := make([]models.NodePortAllocation, 0, len(ips)*len(in.Ports))
@@ -80,9 +115,13 @@ func (c *Controller) nodes(w http.ResponseWriter, r *http.Request) {
 				allocations = append(allocations, models.NodePortAllocation{IP: ip, Port: port})
 			}
 		}
-		n := models.Node{ID: bson.NewObjectID(), Name: strings.TrimSpace(in.Name), Region: in.Region, Address: address, IPs: ips, PortAllocations: allocations, TokenHash: h, Status: "pending", CreatedAt: time.Now()}
+		n := models.Node{ID: bson.NewObjectID(), Name: in.Name, NameKey: normalizedNodeName(in.Name), Region: in.Region, Address: address, IPs: ips, PortAllocations: allocations, TokenHash: h, Status: "pending", CreatedAt: time.Now()}
 		_, e := c.service.Nodes.InsertOne(r.Context(), n)
 		if e != nil {
+			if mongo.IsDuplicateKeyError(e) {
+				writeJSON(w, http.StatusConflict, map[string]string{"error": "A node with this name already exists."})
+				return
+			}
 			writeJSON(w, 500, map[string]string{"error": e.Error()})
 			return
 		}
@@ -104,6 +143,10 @@ func (c *Controller) nodeByID(w http.ResponseWriter, r *http.Request) {
 	id, err := bson.ObjectIDFromHex(parts[0])
 	if err != nil {
 		writeJSON(w, 400, map[string]string{"error": "invalid node id"})
+		return
+	}
+	if len(parts) == 2 && parts[1] == "name" {
+		c.renameNode(w, r, id)
 		return
 	}
 	if len(parts) == 2 && parts[1] == "resources" {
@@ -264,7 +307,9 @@ func (c *Controller) nodeByID(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 400, map[string]string{"error": err.Error()})
 		return
 	}
-	ips = mergeIPs(ips, extraIPs)
+	if len(extraIPs) > 0 {
+		ips = extraIPs
+	}
 	knownIPs := map[string]bool{}
 	for _, ip := range ips {
 		knownIPs[ip] = true
@@ -276,7 +321,7 @@ func (c *Controller) nodeByID(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if !knownIPs[allocation.IP] {
-			writeJSON(w, 400, map[string]string{"error": "allocation IP must be returned by the hostname or listed as an additional IP"})
+			writeJSON(w, 400, map[string]string{"error": "allocation IP must be one of the configured Docker bind IPs"})
 			return
 		}
 		key := fmt.Sprintf("%s:%d", allocation.IP, allocation.Port)

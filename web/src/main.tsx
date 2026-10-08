@@ -609,6 +609,7 @@ function App() {
                   void refresh();
                   navigate("/servers");
                 }}
+                onChanged={() => void refresh()}
               />
             ) : selectedNode ? (
               routeSubsection === "resources" ? (
@@ -645,6 +646,7 @@ function App() {
                     void refresh();
                     navigate("/nodes");
                   }}
+                  onChanged={() => void refresh()}
                 />
               )
             ) : (
@@ -858,6 +860,7 @@ function App() {
       />
       {modal && (
         <Modal
+          wide={modal === "server"}
           title={
             modal === "node"
               ? "Register node"

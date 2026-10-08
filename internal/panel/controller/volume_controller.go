@@ -9,10 +9,11 @@ import (
 	"time"
 
 	"github.com/example/control-plane/internal/models"
+	"github.com/example/control-plane/internal/resources"
 	"go.mongodb.org/mongo-driver/v2/bson"
 )
 
-const minimumVolumeBytes int64 = 128 * 1024 * 1024
+const minimumVolumeBytes = resources.MinimumVolumeBytes
 
 func (c *Controller) serverVolumes(w http.ResponseWriter, r *http.Request, server models.Server, tail []string) {
 	if len(tail) == 0 && r.Method == http.MethodGet {

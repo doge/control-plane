@@ -36,4 +36,4 @@ ARCHIVE="$OUT_DIR/control-plane-${TARGET_OS}-${TARGET_ARCH}.tar.gz"
 COPYFILE_DISABLE=1 tar -C "$STAGE_DIR" -czf "$ARCHIVE" .
 printf 'Built release bundle: %s\n' "$ARCHIVE"
 printf 'Install the panel with: sudo %s/install-panel.sh %s\n' "$OUT_DIR" "$ARCHIVE"
-printf 'Install a node with: sudo %s/install-node.sh %s <panel-url> <node-token> <node-name>\n' "$OUT_DIR" "$ARCHIVE"
+printf 'Install a node with: sudo %s/install-node.sh %s <panel-url> <node-token>\n' "$OUT_DIR" "$ARCHIVE"

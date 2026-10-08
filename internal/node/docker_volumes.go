@@ -8,10 +8,11 @@ import (
 
 	"github.com/docker/docker/api/types/mount"
 	volumetypes "github.com/docker/docker/api/types/volume"
+	"github.com/example/control-plane/internal/resources"
 )
 
 const dockerVolumeIDLabel = "control-plane.volume-id"
-const minimumNodeVolumeBytes int64 = 128 * 1024 * 1024
+const minimumNodeVolumeBytes = resources.MinimumVolumeBytes
 
 func storageMode() string {
 	if runtime.GOOS == "darwin" {
